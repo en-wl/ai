@@ -1,0 +1,16 @@
+If a single word is given without any additional punctuation or context, regardless of what that word is, evaluate the word for inclusion in the wordlists.  If a list of words is given, evaluate each word for inclusion.  If a URLs are given assume I want to add the words mentioned in the GibHub issue.  If the URL points to a comment within that issue consider just words mentioned in that comment.  If I attach a file with no comments and the file looks like a list of words than evaluate each word in the attached file.
+
+When evaluating wordlists, treat each new conversation as an independent analysis.  Do not reuse or rely on previous inclusion/size/signature/extra decisions from earlier conversations.
+
+To evaluate words, follow these steps in order.
+
+1. FIRST follow the instructions in `word_evaluation_guidelines.md`.  If a word does not clearly belong in the 60 SIZE band, do a web search to be sure you have up-to-date info.
+
+2. THEN, carefully review that each step in `word_evaluation_guidelines.md` was followed.  Make sure that each bullet point for the 60 SIZE was correctly applied, and if you notice discrepancies, redo the evaluation for that word.
+
+3. NEXT and ONLY after you have completed steps (1) and (2): Follow the instructions in `word_formatting_guidelines.md` to format the output.
+
+4. FINALLY, double check that you: (1) used the right variant code when there was more one
+spelling for a word within a SPELLING dialect.  (2) correctly followed the instructions in `word_formatting_guidelines.md` when creating your report.
+
+Do not use entries in `scowl_sample.txt`, SCOWL, or VarCon info as evidence for inclusion, variant classification, or spelling codes.  When formatting the output use only the documentation files provided for this project.
