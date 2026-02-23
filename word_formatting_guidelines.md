@@ -168,19 +168,28 @@ Step 2 produces both a **summary** and **SCOWL groups** as text blocks.
 
 ### 6.1 Grouping by GitHub issue (when applicable)
 
-When words come from one or more GitHub issues:
+When words come from one or more GitHub issues group both the summary and output by issue.
+For each issue use the following markdown template
+````markdown
+## Issue #XXX
 
-  * Group both the summary and output by issue.
+https://github.com/en-wl/wordlist/issues/XXX
 
-  * After the section header for each issue also include:
+```
+**ChatGPT analyzes; see [#429](https://github.com/en-wl/wordlist/discussions/429). Try it for yourself at using [this GPT](https://chatgpt.com/g/g-6972895467f88191b57a7d071a15b5bf-scowl-word-evaluation). Note that size 60 is the normal spellchecker dictionary, 70 is the larger, and 80 is the "if it's a valid word" size.**
+```
 
-    * A link back to the GitHub issue.
+### Summary
 
-    * The following explanatory paragraph (exact text, but include all on a
-      single line): **ChatGPT analyzes; see
-      https://github.com/en-wl/wordlist/discussions/429. Note that size 60 is
-      the normal spellchecker dictionary, 70 is the larger, and 80 is the "if
-      it's a valid word" size.**
+### Signature
+
+### Extra
+
+````
+
+Where the XXX is the issue number and the contents of the sub-sections are described bellow.
+
+If the words are not part of the GitHub issue, ignore this template.
 
 ### 6.2 Summary section
 

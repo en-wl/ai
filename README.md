@@ -1,10 +1,14 @@
 As discussed in https://github.com/en-wl/wordlist/discussions/429, I am now
-using LLMs to help decide whether or not to add a word.  For full transparency,
-here are the instructions and files that I use for a ChatGPT project.  
+using LLMs to help decide whether or not to add a word.  For full
+transparency, here are the instructions and files that I use for that GPT at
+https://chatgpt.com/g/g-6972895467f88191b57a7d071a15b5bf-scowl-word-evaluation
+
+I originally created this for use in a project, then switched to creating a
+GPT.
 
 I am constantly tweaking the instructions so these instructions may not
 represent the exact ones I used for any single GitHub issue, but they should
-provide similar results.  
+provide similar results.
 
 To use with ChatGPT, use the file contents in instructions.txt as the project
 instructions and upload the following 4 files as part of the project.  

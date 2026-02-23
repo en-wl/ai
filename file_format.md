@@ -244,8 +244,8 @@ The SPELLING codes and REGION tags are as follows:
 A SPELLING code classifies alternative spellings of the same word. A REGION
 tag labels entries that are specific to a particular region.
 
-Within a group, if there are no lines with the `Z` SPELLING code then `B`
-implies `Z`; similarly if `C` is missing then `Z` implies `C`, and if `D` is
+Whinin a group, if there are no lines with the `Z` SPELLING code then `B`
+implies `Z`.  Similarly if `C` is mising then `Z` implies `C`, and if `D` is
 missing then `B` implies `D`.
 
 The VARIANT-LEVELs are as follows:

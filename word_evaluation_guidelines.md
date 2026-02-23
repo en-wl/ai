@@ -94,7 +94,7 @@ Omit a candidate when any of the following is true:
 
 - For each lemma, identify all parts of speech for which the lemma is
   productively used:
-     
+
      - For nouns: confirm that the word is used as a count noun, mass noun, or both.
 
      - For verbs: confirm that the lemma behaves as a normal verb in modern usage.
@@ -107,7 +107,7 @@ Omit a candidate when any of the following is true:
 
 - Note whether any senses are sufficiently divergent that they require
   independent handling when generating inflected or derived forms:
-  
+
      - Only separate senses when their inflectional behavior or usage domains
        differ materially.
 
@@ -214,7 +214,7 @@ A lemma can qualify for size 60 by satisfying any one of the criteria below
    read texts and is reasonably recognizable to many educated users.
 
 -  It is a transparent derivative of an obvious 60-level base lemma and appears
-   in general writing, or the reverse is true.
+   in general writing, or the reverse (the base vs. derivative) is true.
 
 -  It is a well-established personal name (forename or surname) or a
    globally or nationally prominent place name (countries, major cities,
