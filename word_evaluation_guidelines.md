@@ -7,16 +7,17 @@ format or coding scheme while doing so.
 Other documents may describe how to turn these evaluations into concrete
 entries; that step is outside the scope of this guide.
 
-## 1. Casing and abbreviations
 
-### 1.1 Casing
+## Casing and abbreviations
+
+### Casing
 
 * Always recase to the canonical casing for each lemma.
 * Do not trust the casing in the prompt.
 * Avoid redundant casing variants that add no value beyond what tools can
   generate.
 
-### 1.2 Abbreviations
+### Abbreviations
 
 When the prompt supplies an abbreviation in a non-canonical way
 (e.g., wrong casing or missing final period):
@@ -27,11 +28,11 @@ When the prompt supplies an abbreviation in a non-canonical way
    variant.
 
 
-## 2. Lemma inclusion decisions
+## [inc] Lemma inclusion decisions
 
-### 2.1 Include when
+### Include when
 
-Include a candidate lemma when the following are true:
+Include a candidate lemma when the following are true for the English language:
 
 - It is a real word or stable multi-word expression in current use.
 
@@ -50,9 +51,9 @@ Include a candidate lemma when the following are true:
 - It is an abbreviation/initialism that a typical user might reasonably write in
   casual prose (emails, issue trackers, comments, blog posts, internal docs).
 
-### 2.2 Omit when
+### Exclude when
 
-Omit a candidate when any of the following is true:
+Exclude a candidate when any of the following is true for the English language:
 
 - It is just a misspelling or ad-hoc joke form, not a real lexical item.
 
@@ -72,17 +73,17 @@ Omit a candidate when any of the following is true:
   (texting, Discord, Twitch/in-game chat) and is uncommon in emails, issue
   trackers, blog posts, or other slightly more formal writing.
 
-### 2.3 Borderline include/exclude
+### Borderline include/exclude
 
 - If the item is clearly a genuine lexical item and at least modestly used,
   prefer inclusion unless there is a strong reason not to.
 
 - When genuine inclusion and omission both remain plausibly defensible after
-  applying §§2.1–2.2, treat the case as borderline and record that uncertainty
-  explicitly.
+  applying the include/exclude rules, treat the case as borderline and record
+  that uncertainty explicitly.
 
 
-## 3. Lemma structure, parts of speech, and senses
+## [lemmas] Lemma structure, parts of speech, and senses
 
 - Determine whether the spelling corresponds to one or more distinct lemmas:
 
@@ -114,9 +115,9 @@ Omit a candidate when any of the following is true:
      - If all senses share the same inflectional behavior, treat them together.
 
 
-## 4. Inflectional and regularly-derived forms
+## [infl] Inflectional and regularly-derived forms
 
-For each lemma–POS identified in Section 3, gather the information below.
+For each lemma–POS identified in [incl], gather the information below.
 
 - Nouns:
      - Determine whether a plural form is attested and used.
@@ -156,9 +157,10 @@ Once a derived form is confirmed as a standard, attested form in mainstream
 edited prose, record it.  Do not exclude such forms at this stage based on
 their frequency.
 
-## 5. SIZE selection (60, 70, 80)
 
-### 5.1. Overall Procedure
+## [size] SIZE selection (60, 70, 80)
+
+### Overall Procedure
 
 Assign each accepted lemma–POS a SIZE of 60, 70, or 80.
 
@@ -177,7 +179,7 @@ When a case is borderline:
 * Prefer the smaller size unless there is a clear, criteria-based reason to
   choose the larger size.
 
-* Consider typo-masking as outlined in Section 6 as one such reason.
+* Consider typo-masking as outlined in [typo] as one such reason.
 
 * Consider nonstandard/objectionable status (to the extent that someone might
   take issue with inclusion) as one such reason.
@@ -189,7 +191,7 @@ Evaluate each lemma-POS independently; do not let other lemmas in the same
 batch, their relative commonness, or their size outcomes influence the
 current lemma's SIZE assignment.
 
-### 5.2. Size 60
+### Size 60
 
 A lemma can qualify for size 60 by satisfying any one of the criteria below
 (or a strong combination of them):
@@ -214,13 +216,13 @@ A lemma can qualify for size 60 by satisfying any one of the criteria below
    read texts and is reasonably recognizable to many educated users.
 
 -  It is a transparent derivative of an obvious 60-level base lemma and appears
-   in general writing, or the reverse (the base vs. derivative) is true.
+   in general writing, or the reverse is true.
 
 -  It is a well-established personal name (forename or surname) or a
    globally or nationally prominent place name (countries, major cities,
    well-known regions).
 
-### 5.3. Size 70
+### Size 70
 
 A lemma can qualify for Size 70 when it does not qualify for size 60, but by
 satisfying any one of the criteria below (or a strong combination of them):
@@ -239,18 +241,18 @@ satisfying any one of the criteria below (or a strong combination of them):
    single family or small community) but not sufficiently well-established to
    meet size 60.
 
--  It is a name of a place name that is primarily regional or local but has
-   stable, wider recognition beyond the immediate locality (e.g., counties and
+-  It is a place name that is primarily regional or local but has stable,
+   wider recognition beyond the immediate locality (e.g., counties and
    equivalent administrative subdivisions, county seats, and larger
    cities/towns commonly referenced in state or regional contexts).
 
-### 5.4. Size 80
+### Size 80
 
 - Everything else that passes the inclusion test but cannot be
   clearly justified at 60 or 70.
 
 
-## 6. Typo-masking in borderline SIZE decisions
+## [typo] Typo-masking in borderline SIZE decisions
 
 Typo-masking concerns the risk that including a rare or unusual word might make
 it harder to spot typos in a much more common word. Treat typo-masking strictly
@@ -276,20 +278,14 @@ In particular:
      very common word, it may be safer to assign 80.
 
 Very short items that are close in form to extremely common words may justify
-a more cautious SIZE choice at the boundary.  Casing is important: for
+a more cautious SIZE choice at the boundary.  Casing is important; for
 example, proper all-caps acronyms are less likely to be confused with a
 similar word than an unmarked or more casual all-lowercase acronym. Outside of
 these boundary decisions, treat typo-masking as a minor consideration compared
 to lexical reality and user expectations.
 
 
-## 7. Reserved
-
-This section is intentionally left blank and kept only to preserve section
-numbering.
-
-
-## 8. Spelling and dialect usage profile
+## [variants] Spelling and dialect usage profile
 
 Check for all possible spellings of both the lemma and all derived forms.  If
 a word is a compound word check for all possible forms: closed, open,
