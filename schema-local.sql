@@ -1,7 +1,7 @@
 create table if not exists input (
   uid integer primary key,
   lemmas text not null,
-  base_pos not null
+  pos not null
 );
 
 create table if not exists results (

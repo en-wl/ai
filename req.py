@@ -7,10 +7,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import json
 import re
-from decimal import Decimal
 from pathlib import Path
 from dataclasses import dataclass, field
-from unidecode import unidecode
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from collections import defaultdict
 import time
@@ -19,14 +17,21 @@ import sys
 import signal
 import subprocess
 
+# === Configurable defaults (can be overridden by req-config.py) ===
+
+db = 'data.db'
+system_prompt = 'system_prompt.md'
+post_run = None
 ENABLE_REDO = False
+temp_override = None
+validate_row = None
+key_file = 'key.txt'
+x_title = None  # required — config must set this
+http_referer = 'https://github.com/en-wl/wordlist'
+
 def input_rows(conn, model):
     return conn.execute("select * from input where uid in (select uid from candidates where model = ?)",
                        (model,))
-
-#ENABLE_REDO = True
-#def input_rows(conn, model):
-#   return conn.execute("select * from input")
 
 models_config = {
     # "claude-sonnet-4.5": {
@@ -44,7 +49,7 @@ models_config = {
     "gpt-5.3-chat": {
         "name": "openai/gpt-5.3-chat",
         "providers": ["openai"],
-        "batch_size": 200, 
+        "batch_size": 200,
     },
     "gpt-oss-120b": {
         "name": "openai/gpt-oss-120b",
@@ -104,42 +109,68 @@ models_config = {
     }
 }
 
-#temp_override = 0.15
-temp_override = None
+# === Load config ===
 
-OPENROUTER_API_KEY = Path("key.txt").read_text().rstrip()
+_config_path = Path('req-config.py')
+if _config_path.exists():
+    exec(_config_path.read_text(), globals())
+
+# === Dynamic column discovery ===
+
+def discover_columns(db_path):
+    with sqlite3.connect(db_path) as conn:
+        input_info = conn.execute("PRAGMA table_info(input)").fetchall()
+        results_info = conn.execute("PRAGMA table_info(results)").fetchall()
+
+    input_cols = [r[1] for r in input_info]
+
+    results_all_cols = [r[1] for r in results_info]
+    results_types = {r[1]: r[2].upper() for r in results_info}
+    result_data_cols = [c for c in results_all_cols if c not in ('run_id', 'req_id')]
+
+    return input_cols, result_data_cols, results_all_cols, results_types
+
+input_cols, result_data_cols, results_all_cols, results_types = discover_columns(db)
+results_insert_sql = f"INSERT INTO results ({', '.join(results_all_cols)}) VALUES ({', '.join('?' for _ in results_all_cols)})"
+
+# === API setup ===
+
+if x_title is None:
+    raise RuntimeError("x_title must be set in req-config.py")
+
+OPENROUTER_API_KEY = Path(key_file).read_text().rstrip()
 url = "https://openrouter.ai/api/v1/chat/completions"
 headers = {
     "Authorization": f"Bearer {OPENROUTER_API_KEY}",
     "Content-Type": "application/json",
-    "X-Title": "Corpus Size Scoring",
-    "HTTP-Referer": "https://github.com/en-wl/wordlist",
+    "X-Title": x_title,
+    "HTTP-Referer": http_referer,
 }
 
-instructions = Path("system_prompt.md").read_text(encoding="utf-8")
+instructions = Path(system_prompt).read_text(encoding="utf-8")
 
 class BatchSession:
     def __init__(self, model_alias, batch_size):
-        self.input_rows = {}
-        self.input_lemmas = {}
+        self.input_strings = {}
+        self.input_data = {}
 
-        self.header = '|'.join(['uid', 'lemmas', 'base_pos'])
-        with sqlite3.connect('data.db') as conn:
+        self.header = '|'.join(input_cols)
+        with sqlite3.connect(db) as conn:
             for row in input_rows(conn, model_alias):
-                uid, lemmas, base_pos = row
-                row = '|'.join(str(col) for col in [uid, lemmas, base_pos])
-                self.input_lemmas[uid] = set(unidecode(lemma.strip().lower()) for lemma in lemmas.split(','))
-                self.input_rows[uid] = row
+                uid = row[0]
+                values = [str(col) for col in row]
+                self.input_strings[uid] = '|'.join(values)
+                self.input_data[uid] = dict(zip(input_cols, row))
 
         self.batch_size = batch_size
-        self.uids_todo = list(self.input_rows.keys())
+        self.uids_todo = list(self.input_strings.keys())
         random.shuffle(self.uids_todo)
 
         model_config = models_config[model_alias]
         temperature = model_config.get('temperature', 1) if temp_override is None else temp_override
         reasoning = model_config.get('reasoning', 'n/a')
 
-        with sqlite3.connect('data.db') as conn:
+        with sqlite3.connect(db) as conn:
             cur = conn.execute(
                 """INSERT INTO runs (model, start_time, batch_size, temperature, reasoning_effort, sample_type)
                    VALUES (?, (julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, 'random')""",
@@ -162,8 +193,7 @@ class ParseResult:
     errors: list = field(default_factory=list)
 
 
-
-def process_llm_response(content, expected_uids, input_lemmas):
+def process_llm_response(content, expected_uids, input_data):
     lines = content.splitlines()
     table_rows = defaultdict(list)
     model_notes = []
@@ -234,83 +264,80 @@ def process_llm_response(content, expected_uids, input_lemmas):
                     })
                     continue
 
-            # Check for malformed row (cols < 6)
-            if len(cells) < 6:
+            # Check for malformed row
+            if len(cells) < len(result_data_cols):
                 errors.append({
                     'uid': uid,
                     'error_code': "MALFORMED_ROW",
-                    'error_msg': f"Malformed row (cols < 6)",
+                    'error_msg': f"Malformed row (cols < {len(result_data_cols)})",
                     'orig_line': line
                 })
                 continue
 
-            lemma_str = cells[1]
-            pos = cells[2]
-            size_str = cells[3].lower()
-            borderline_str = cells[4].lower()
-            size_notes = " | ".join(cells[5:]) # Join remaining cells
+            # Join overflow cells into last column
+            if len(cells) > len(result_data_cols):
+                cells[len(result_data_cols)-1] = " | ".join(cells[len(result_data_cols)-1:])
+                cells = cells[:len(result_data_cols)]
 
-            # Check lemma
-            normalized_lemmas = set(unidecode(l.strip().lower()) for l in lemma_str.split(','))
-            if uid is not None and normalized_lemmas.isdisjoint(input_lemmas[uid]):
+            # Map cells to column names
+            row = dict(zip(result_data_cols, cells))
+            row['uid'] = uid  # ensure uid is int
+
+            # Type conversion based on declared SQLite column types
+            for col in result_data_cols:
+                if col == 'uid':
+                    continue
+                col_type = results_types.get(col, '')
+                val = row[col]
+                if col_type == 'INTEGER':
+                    try:
+                        row[col] = int(val)
+                    except (ValueError, TypeError):
+                        pass  # leave as string; validate_row or INSERT constraint may handle it
+                elif col_type == 'REAL':
+                    try:
+                        row[col] = float(val)
+                    except (ValueError, TypeError):
+                        pass
+
+            # validate_row callback
+            if validate_row is not None:
+                row, err = validate_row(row, input_data[uid])
+                if err is not None:
+                    errors.append({
+                        'uid': uid,
+                        'error_code': err['error_code'],
+                        'error_msg': err['error_msg'],
+                        'orig_line': line
+                    })
+                    continue
+
+            # Post-validation type check
+            type_error = None
+            for col in result_data_cols:
+                if col == 'uid':
+                    continue
+                col_type = results_types.get(col, '')
+                val = row[col]
+                if col_type == 'INTEGER' and not isinstance(val, int):
+                    type_error = (col, val)
+                    break
+                elif col_type == 'REAL' and not isinstance(val, (int, float)):
+                    type_error = (col, val)
+                    break
+
+            if type_error:
+                col, val = type_error
                 errors.append({
                     'uid': uid,
-                    'error_code': "LEMMA_MISMATCH",
-                    'error_msg': f"Lemma mismatch: {normalized_lemmas}",
+                    'error_code': "INVALID_TYPE",
+                    'error_msg': f"Column '{col}' expected {results_types[col]} but got: {val}",
                     'orig_line': line
                 })
                 continue
 
-            # Parse and check size
-            if size_str == 'excluded' or size_str == 'exclude':
-                size = 99
-            else:
-                try:
-                    size = int(size_str)
-                except ValueError:
-                    size = None
-            if size not in (60, 70, 80, 99):
-                errors.append({
-                    'uid': uid,
-                    'error_code': "INVALID_SIZE",
-                    'error_msg': f"Invalid size str: {size_str}",
-                    'orig_line': line
-                })
-                continue
-
-            # Parse and check borderline
-            if borderline_str == '' or borderline_str == 'no':
-                borderline = ''
-            elif borderline_str == '60/70':
-                borderline = '60/70'
-            elif borderline_str == '70/80':
-                borderline = '70/80'
-            elif borderline_str == 'incl/excl':
-                if size == 80:
-                    borderline = '80/99'
-                else:
-                    borderline = ''
-            else:
-                errors.append({
-                    'uid': uid,
-                    'error_code': "INVALID_BORDERLINE",
-                    'error_msg': f"Invalid borderline str: {borderline_str}",
-                    'orig_line': line
-                })
-                continue
-
-            row_data = {
-                'uid': uid,
-                'lemmas': lemma_str,
-                'pos': pos,
-                'size': size,
-                'borderline': borderline,
-                'size_notes': size_notes,
-                'normalized_lemmas': normalized_lemmas,
-                'orig_line': line,
-            }
-
-            table_rows[uid].append(row_data)
+            row['orig_line'] = line
+            table_rows[uid].append(row)
 
         else:
             # Line does not match |...| pattern
@@ -417,7 +444,7 @@ def send_request(run, model_alias, seq_id, uids):
     model = models_config[model_alias]
     model_id = model['name']
 
-    rows_content = ''.join(f'{run.input_rows[uid]}\n' for uid in uids if uid in run.input_rows)
+    rows_content = ''.join(f'{run.input_strings[uid]}\n' for uid in uids if uid in run.input_strings)
     data = f"{run.header}\n{rows_content}"
     payload = {
         "model": model_id,
@@ -485,7 +512,7 @@ def send_request(run, model_alias, seq_id, uids):
         error_msg = f"{type(e).__name__}: {e}"
         resp_data = {"error": error_msg}
 
-    parsed_result, failed, redo = process_llm_response(content, uids, run.input_lemmas)
+    parsed_result, failed, redo = process_llm_response(content, uids, run.input_data)
 
     if not parsed_result.rows and error_msg is None:
         error_code = parsed_result.errors[-1]['error_code'] if parsed_result.errors else "UNKNOWN"
@@ -493,7 +520,7 @@ def send_request(run, model_alias, seq_id, uids):
 
     while True:
         try:
-            with sqlite3.connect('data.db') as conn:
+            with sqlite3.connect(db) as conn:
                 cur = conn.execute(
                     """INSERT INTO requests (entry_time, run_id, batch_size, error, model_notes)
                        VALUES ((julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, ?)""",
@@ -505,13 +532,28 @@ def send_request(run, model_alias, seq_id, uids):
                     (req_id, json.dumps(payload), json.dumps(resp_data))
                 )
 
-                conn.executemany(
-                    """INSERT INTO results
-                        (uid, run_id, req_id, lemmas, pos, size, borderline, size_notes)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    ((row['uid'], run.run_id, req_id, row['lemmas'], row['pos'], row['size'],
-                      row['borderline'], row['size_notes'])
-                     for row in parsed_result.rows))
+                # Insert results row-by-row to catch constraint violations
+                insert_errors = []
+                for row in parsed_result.rows:
+                    values = tuple(
+                        row.get(c, run.run_id if c == 'run_id' else req_id if c == 'req_id' else '')
+                        for c in results_all_cols
+                    )
+                    try:
+                        conn.execute(results_insert_sql, values)
+                    except sqlite3.IntegrityError as e:
+                        insert_errors.append({
+                            'uid': row['uid'],
+                            'error_code': 'CONSTRAINT_VIOLATION',
+                            'error_msg': str(e),
+                            'orig_line': row.get('orig_line'),
+                        })
+
+                # Add constraint failures to redo/failed sets
+                constraint_failed = set(e['uid'] for e in insert_errors)
+                redo |= constraint_failed
+                failed |= constraint_failed
+                parsed_result.errors.extend(insert_errors)
 
                 conn.executemany(
                     """INSERT INTO errors (req_id, uid, error_code, error_msg, orig_line)
@@ -589,7 +631,7 @@ def main(max_workers, batch_size):
 
         if shutdown_str:
             return
-            
+
         if hit_429 and record_rate_limit():
             old = effective_max_workers
             effective_max_workers = max(1, min(len(in_flight), old-1))
@@ -599,7 +641,7 @@ def main(max_workers, batch_size):
 
         for uid in failed:
             failed_uids[uid] = failed_uids.get(uid, 0) + 1
-        
+
         if ENABLE_REDO:
             for uid in redo:
                 if failed_uids.get(uid, 0) >= 3:
@@ -651,7 +693,7 @@ def main(max_workers, batch_size):
         if shutdown_str:
             sys.exit(1)
 
-    return set(run.input_rows.keys())
+    return set(run.input_strings.keys())
 
 if __name__ == '__main__':
     # Set up signal handler for Ctrl-C
@@ -665,18 +707,18 @@ if __name__ == '__main__':
     if len(sys.argv) > 3:
         batch_size = int(sys.argv[3])
 
-    with sqlite3.connect('data.db') as conn:
+    with sqlite3.connect(db) as conn:
         conn.executemany("insert or ignore into models values (?)",
                          ((k,) for k in models_config.keys()))
-        
+
 
     print(f"model: {model_alias}; max_workers: {max_workers}; batch_size: {batch_size}")
     time.sleep(2)
 
     while True:
-       subprocess.run(['python3', 'populate_size_scores.py'], check=True)
+       if post_run is not None:
+           subprocess.run(post_run, check=True)
        uids = main(max_workers, batch_size)
        if not uids or uids <= failed_uids.keys():
           break
        prev_uid = uids
-   
