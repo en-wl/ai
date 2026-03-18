@@ -699,6 +699,11 @@ if __name__ == '__main__':
     # Set up signal handler for Ctrl-C
     signal.signal(signal.SIGINT, signal_handler)
 
+    if len(sys.argv) < 2:
+        print(f"usage: python3 -m req <model> [max_workers] [batch_size]")
+        print(f"\navailable models: {', '.join(models_config.keys())}")
+        sys.exit(1)
+
     model_alias = sys.argv[1]
     batch_size = models_config[model_alias]['batch_size']
     max_workers = 100

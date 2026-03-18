@@ -15,4 +15,3 @@ create table if not exists results (
   size_notes text not null,
   primary key (uid, req_id)
 ) without rowid;
-

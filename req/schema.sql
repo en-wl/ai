@@ -35,7 +35,4 @@ create table if not exists raw_data (
   response text
 );
 
-drop view if exists results_w_model;
-create view results_w_model as
-select model,r.* from results as r join runs using (run_id);
 

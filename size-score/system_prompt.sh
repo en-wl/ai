@@ -59,8 +59,8 @@ EOF
 
 echo
 echo
-cat prompts/eval/inc.md
+cat ../prompts/eval/inc.md
 
 echo
 echo
-cat prompts/eval/size.md
+cat ../prompts/eval/size.md
