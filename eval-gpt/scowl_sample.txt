@@ -1,0 +1,103 @@
+35: sale <n>: sales
+
+50: New York <n/place>: New York's
+
+50: New Yorker <n>: New Yorkers, New Yorker's
+
+50: Chicago <n/place>: Chicago's
+
+60 US: Johnstown <n/place>: Johnstown's
+
+60: _: saleroom <n>: salerooms
+60: _V: sale-room <n>: sale-rooms
+
+35: salesperson <n>: (salespersons | ~: salespeople), salesperson's, (salespersons' | ~: salespeople's)
+
+70: art form <n>: art forms
+
+35: A: scepter <n>: scepters, scepter's
+35: B: sceptre <n>: sceptres, sceptre's
+
+35: interfere <v>: interfered, interfering, interferes
+
+35: goof <n_v>: goofed, goofing, goofs, goof's
+
+35: goose <v>: goosed, goosing, gooses
+
+35: goose <n> {bird}: geese, goose's, geese's
+
+35: goose <n> {poke}
+
+35: A Cv DV: color <n>: colors, color's
+35: B C D: colour <n>: colours, colour's
+
+35: A Cv DV: color <v>: colored, coloring, colors
+35: B C D: colour <v>: coloured, colouring, colours
+
+35: A Cv DV: color <aj>
+35: B C D: colour <aj>
+
+80: A: colorectal <aj>
+80: B: colourectal <aj>
+
+35: artful <aj>
+
+35: goofy <aj>: goofier, goofiest
+
+70: scrimpy <aj>
+80: - <aj>: scrimpier, scrimpiest
+
+70: gappy <a>: gappier, gappiest
+
+80: goopy <a>: goopier, goopiest
+
+60: sightly <aj>: sightlier, sightliest
+
+35: sightless <aj>
+
+35: _: scary <aj>: scarier, scariest
+35: _-: scarey <aj>: scarier, scariest
+
+50: _: dox <v>: doxed, doxing, doxes
+50: _.: doxx <v>: doxxed, doxxing, doxxes
+
+70: uglification <n>: uglifications
+
+80: uglifier <n>: uglifiers
+
+70: uglify <v>: uglified, uglifying, uglifies
+
+80: uglily
+
+35: ugliness <n>
+80: - <n>: uglinesses~
+
+35: ugly <aj>: uglier, ugliest
+
+80: -ugly <n>: uglies
+
+85: !ugly <v>: uglied, uglying, uglies
+
+70: ugly customer
+
+70: ugly duckling <n>
+70: ugly ducklings, ugly duckling's
+
+35: A B: check <v> {verify}: checked, checking, checks
+
+35: A B: check <n> {verify}: checks
+
+35: A CV: check <n> {bank}: checks, check's
+35: B C: cheque <n> {bank}: cheques, cheque's
+
+50: Lora <n/person>: Lora's
+
+50: Tom <n/person>: Tom's
+
+50: Atkinson <n/person>: Atkinson's
+
+35: A Z: acclimatize <v>: acclimatized, acclimatizing, acclimatizes
+35: B: acclimatise <v>: acclimatised, acclimatising, acclimatises
+
+80: A Z: acclimatizer <n>: acclimatizers
+80: B: acclimatiser <n>: acclimatisers
