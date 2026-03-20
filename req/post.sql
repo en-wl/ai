@@ -15,23 +15,23 @@ from raw_data
 join requests using (req_id);
 select * from request_cost limit 0;
 
-drop view if exists row_cost;
-create view row_cost as
-select rc.*, output_rows, usage_cost/output_rows as row_cost
+drop view if exists uid_cost;
+create view uid_cost as
+select rc.*, output_rows, usage_cost/output_rows as uid_cost
   from request_cost as rc
   left join (select req_id, count(distinct uid) as output_rows
                from results group by req_id) as q using (req_id);
-select * from row_cost limit 0;
+select * from uid_cost limit 0;
 
 drop view if exists run_cost;
 create view run_cost as
-select run_id, sum(usage_cost) as usage_cost, sum(usage_cost) / sum(output_rows) as row_cost
-from row_cost
+select run_id, sum(usage_cost) as usage_cost, sum(usage_cost) / sum(output_rows) as uid_cost
+from uid_cost
 group by run_id;
 select * from run_cost limit 0;
 
 drop view if exists runs_w_cost;
 create view runs_w_cost as
-select r.*, round(usage_cost,4) as usage_cost, round(row_cost,6) as row_cost
+select r.*, round(usage_cost,4) as usage_cost, round(uid_cost,6) as uid_cost
   from runs as r join run_cost using (run_id);
 select * from runs_w_cost limit 0;

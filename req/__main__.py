@@ -363,19 +363,8 @@ def process_llm_response(content, expected_uids, input_data):
         errors=errors,
     )
 
-    # iterate through table_rows and check for duplicates; only keep the
-    # non-duplicates
     for rows in table_rows.values():
-        if len(rows) == 1:
-            res.rows.append(rows[0])
-        else:
-            for row in rows:
-                res.errors.append({
-                    'uid': row['uid'],
-                    'error_code': "DUPLICATE_UID",
-                    'error_msg': "Duplicate UID.",
-                    'orig_line': row['orig_line'],
-                })
+        res.rows.extend(rows)
 
     completed = set(row['uid'] for row in res.rows)
     if len(completed) == 0:

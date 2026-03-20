@@ -104,6 +104,6 @@ these views depend on the task-specific `results` table):
 |---|---|
 | `results_w_model` | Results joined with run metadata (model name) |
 | `request_cost` | Per-request cost extracted from raw API response |
-| `row_cost` | Per-request cost divided by output rows |
+| `uid_cost` | Per-request cost divided by output UIDs |
 | `run_cost` | Aggregated cost per run |
 | `runs_w_cost` | Runs table joined with cost data |

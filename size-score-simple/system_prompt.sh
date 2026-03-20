@@ -21,20 +21,14 @@ the table should be self-explanatory.  All entries in a single row of the
 table should be evaluated together as a single lemma, please use the `uid` in
 any output when referencing that lemma.
 
-The POSes are normally one of: noun (including proper-nouns), pronoun, verb,
-adj, or adv, conj, prep, det, interj.
-
-If a POS ends is a single letter the exact POS is not known.  These POSes are:
+The POSes are:
 
 ```
-  ?: unknown
-  n: likely noun
-  m: likely verb, possible noun
-  a: adjective or adverb
+  n: noun (including proper-nouns)
+  v: verb
+  aj: adjective
+  av: adverb
 ```
-
-Words with the `?` POS are likely lemmas, so assume it is.  If the word is
-clearly not a lemma, evaluate it anyway, but make a note of the actual lemma.
 
 Evaluate all lemmas given together as a single unit.
 
@@ -54,17 +48,9 @@ Return the results as a Markdown formatted table, with the following columns.
 
 Do not use any additional formatting for entries in the table.
 
-Output at least one row for each input row.  Do not treat excluded words as
-special cases; use the word "excluded" only in the size column and fill out
-the other columns as you would if the word was included.
-
-If an exact POS was not given, replace the POS with the correct one.  If the
-lemma has multiple POSes, use one row for each POS and evaluate each new POS
-separately.
-
-If the POS was `?` and the word is clearly not a lemma, add the lemma to the
-list in the `lemmas` column, but also include the original word and make a
-note of this fact in the `size_notes` column.
+Output one row for each input row.  Do not treat excluded words as special
+cases; use the word "excluded" only in the size column and fill out the other
+columns as you would if the word was included.
 
 A header row for the table is required, but a legend is unnecessary.
 

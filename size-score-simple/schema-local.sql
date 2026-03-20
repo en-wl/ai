@@ -13,5 +13,5 @@ create table if not exists results (
   size integer not null check (size in (60, 70, 80, 99)),
   borderline text not null check (borderline in ('', '60/70', '70/80', '80/99')),
   size_notes text not null,
-  primary key (uid, pos, req_id)
+  primary key (uid, req_id)
 ) without rowid;
