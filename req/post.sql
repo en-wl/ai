@@ -7,7 +7,9 @@ select model,r.* from results as r join runs using (run_id);
 
 drop view if exists request_cost;
 create view request_cost as
-select req_id, entry_time, run_id,
+select req_id, entry_time, send_time,
+       entry_time - send_time as elapsed_secs,
+       run_id,
        batch_size as input_rows,
        error is null as success,
        json_extract(response, '$.usage.cost') as usage_cost

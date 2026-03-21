@@ -23,6 +23,7 @@ create table if not exists runs (
 create table if not exists requests (
   req_id integer primary key,
   entry_time real not null, -- unix timestamp with subsecond precision
+  send_time real,           -- unix timestamp: just before http_session.post() — NULL for old rows
   run_id integer not null,
   batch_size integer not null, -- actual numbers of rows send for this request
   error text, -- error message if the run was aborted, null otherwise

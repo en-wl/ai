@@ -4,6 +4,7 @@ from math import ceil,floor
 import os
 import requests
 from requests.adapters import HTTPAdapter
+import urllib3
 from urllib3.util.retry import Retry
 import json
 import re
@@ -16,6 +17,13 @@ import logging
 import sys
 import signal
 import subprocess
+class RetryNoTimeout(Retry):
+    """Retry on status/connection errors but not on timeouts."""
+    def increment(self, method=None, url=None, response=None, error=None, **kwargs):
+        if isinstance(error, urllib3.exceptions.TimeoutError):
+            raise error
+        return super().increment(method=method, url=url, response=response,
+                                 error=error, **kwargs)
 
 # === Configurable defaults (can be overridden by req-config.py) ===
 
@@ -398,9 +406,8 @@ def process_llm_response(content, expected_uids, input_data):
 # Standard server errors: 500, 502, 503, 504
 # Cloudflare errors: 520, 521, 522, 524
 status_codes_to_retry = [429, 500, 502, 503, 504, 520, 521, 522, 524]
-retry_strategy = Retry(
-    total=None,
-    backoff_max=1.2,
+retry_strategy = RetryNoTimeout(
+    total=3,
     backoff_factor=0.25,
     status_forcelist=status_codes_to_retry,
     allowed_methods=["POST"],
@@ -437,6 +444,7 @@ def send_request(run, model_alias, seq_id, uids):
     data = f"{run.header}\n{rows_content}"
     payload = {
         "model": model_id,
+        "stream": True,
         "provider": {
             "only": model['providers']
         },
@@ -471,35 +479,100 @@ def send_request(run, model_alias, seq_id, uids):
 
     parsed_result = ParseResult()
     error_msg = None
-    content = ""
-
     adapter = HTTPAdapter(
         max_retries=retry_strategy,
     )
     http_session = requests.Session()
     http_session.mount("https://", adapter)
 
+    cfg = models_config[model_alias]
+    timeout = cfg.get('timeout', 30)
+
+    data = {}
+    send_time = time.time()
     try:
-        resp = http_session.post(url, headers=headers, json=payload)
+        resp = http_session.post(url, headers=headers, json=payload, timeout=timeout, stream=True)
         resp.raise_for_status()
-        resp_data = resp.json()
-        content = resp_data["choices"][0]["message"]["content"]
-    except requests.exceptions.HTTPError as e:
+        last_data_time = time.time()
+        for raw in resp.iter_lines():
+            line = raw.decode('utf-8')
+            now = time.time()
+            if not line.startswith('data: '):
+                if now - last_data_time > timeout:
+                    raise requests.exceptions.Timeout(f"No data received for {timeout}s")
+                continue
+            data_str = line[6:]
+            if data_str == '[DONE]':
+                break
+
+            chunk = json.loads(data_str)
+            if not data:
+                last_data_time = now
+                data = chunk.copy()
+                data['object'] = 'reconstructed'
+                message = {
+                    'content': ''
+                }
+                data['choices'] = [{
+                    'message': message
+                }]
+
+            if chunk['choices']:
+                choice_data = chunk['choices'][0]
+            else:
+                choice_data = {}
+
+            for key, value in choice_data.get('delta', {}).items():
+                if key in ('content', 'reasoning') and value:
+                    last_data_time = now
+                    message[key] = message.get(key, '') + value
+                elif key in ('reasoning_details'):
+                    # fixme: merge
+                    pass
+
+            if choice_data.get('finish_reason', None) is not None:
+                data['choices'][0]['finish_reason'] = choice_data['finish_reason']
+                data['choices'][0]['native_finish_reason'] = choice_data.get('native_finish_reason', None)
+
+            error = chunk.get('error', None)
+            if error:
+                error_msg = error.get('message', str(error))
+                data['error'] = error
+
+            usage = chunk.get('usage', None)
+            if usage is not None:
+                last_data_time = now
+                data['usage'] = usage
+
+            if now - last_data_time > timeout:
+                raise requests.exceptions.Timeout(f"No data received for {timeout}s")
+
+
+    except requests.HTTPError as e:
         error_msg = f"{type(e).__name__}: {e}"
         if e.response is None:
-            resp_data = {"error": error_msg}
+            data = {"error": error_msg}
         else:
             resp = e.response
             if resp.status_code == 429:
                 logging.info(f"rate limited (429): {run.run_id}/{model_alias} #{seq_id+1}.")
-                return (set(uids), True)
-            resp_data = {"error": error_msg,
-                         "status_code": resp.status_code,
-                         "reason": resp.reason,
-                         "body": resp.text}
+                return (set(), set(uids), True)
+            data = {"error": error_msg,
+                    "status_code": resp.status_code,
+                    "reason": resp.reason,
+                    "body": resp.text}
+    except (requests.exceptions.Timeout, urllib3.exceptions.TimeoutError) as e:
+        error_msg = str(e)
+        data['error'] = error_msg
     except Exception as e:
+        logging.exception(e)
         error_msg = f"{type(e).__name__}: {e}"
-        resp_data = {"error": error_msg}
+        data["error"] = error_msg
+
+    if error_msg:
+        content = ''
+    else:
+        content = data["choices"][0]["message"]["content"]
 
     parsed_result, failed, redo = process_llm_response(content, uids, run.input_data)
 
@@ -511,14 +584,14 @@ def send_request(run, model_alias, seq_id, uids):
         try:
             with sqlite3.connect(db) as conn:
                 cur = conn.execute(
-                    """INSERT INTO requests (entry_time, run_id, batch_size, error, model_notes)
-                       VALUES ((julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, ?)""",
-                    (run.run_id, len(uids), error_msg, parsed_result.model_notes))
+                    """INSERT INTO requests (entry_time, send_time, run_id, batch_size, error, model_notes)
+                       VALUES ((julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, ?, ?)""",
+                    (send_time, run.run_id, len(uids), error_msg, parsed_result.model_notes))
                 req_id = cur.lastrowid
 
                 conn.execute(
                     "INSERT INTO raw_data (req_id, request, response) VALUES (?, ?, ?)",
-                    (req_id, json.dumps(payload), json.dumps(resp_data))
+                    (req_id, json.dumps(payload), json.dumps(data))
                 )
 
                 # Insert results row-by-row to catch constraint violations
