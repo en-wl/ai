@@ -291,23 +291,6 @@ def process_llm_response(content, expected_uids, input_data):
             row = dict(zip(result_data_cols, cells))
             row['uid'] = uid  # ensure uid is int
 
-            # Type conversion based on declared SQLite column types
-            for col in result_data_cols:
-                if col == 'uid':
-                    continue
-                col_type = results_types.get(col, '')
-                val = row[col]
-                if col_type == 'INTEGER':
-                    try:
-                        row[col] = int(val)
-                    except (ValueError, TypeError):
-                        pass  # leave as string; validate_row or INSERT constraint may handle it
-                elif col_type == 'REAL':
-                    try:
-                        row[col] = float(val)
-                    except (ValueError, TypeError):
-                        pass
-
             # validate_row callback
             if validate_row is not None:
                 row, err = validate_row(row, input_data[uid])
@@ -320,26 +303,22 @@ def process_llm_response(content, expected_uids, input_data):
                     })
                     continue
 
-            # Post-validation type check
-            type_error = None
-            for col in result_data_cols:
-                if col == 'uid':
-                    continue
-                col_type = results_types.get(col, '')
-                val = row[col]
-                if col_type == 'INTEGER' and not isinstance(val, int):
-                    type_error = (col, val)
-                    break
-                elif col_type == 'REAL' and not isinstance(val, (int, float)):
-                    type_error = (col, val)
-                    break
-
-            if type_error:
-                col, val = type_error
+            # Post-validation type fixes
+            try:
+                for col in result_data_cols:
+                    if col == 'uid':
+                        continue
+                    col_type = results_types.get(col, '')
+                    val = row[col]
+                    if col_type == 'INTEGER':
+                        row[col] = int(val)
+                    elif col_type == 'REAL':
+                        row[col] = float(val)
+            except (TypeError, ValueError):
                 errors.append({
                     'uid': uid,
                     'error_code': "INVALID_TYPE",
-                    'error_msg': f"Column '{col}' expected {results_types[col]} but got: {val}",
+                    'error_msg': f"Column '{col}' expected {col_type} but got: {val}",
                     'orig_line': line
                 })
                 continue

@@ -42,10 +42,18 @@ def validate_row(row, input_row):
     if normalized.isdisjoint(expected):
         return row, {'error_code': 'LEMMA_MISMATCH', 'error_msg': f'Lemma mismatch: {normalized}'}
 
-    # Size transformation ("excluded" -> 99)
-    size_str = str(row['size']).lower() if not isinstance(row['size'], int) else None
-    if size_str and size_str in ('excluded', 'exclude'):
-        row['size'] = 99
+    # Parse and check size
+    size_str = row['size'].lower()
+    if size_str in ('excluded', 'exclude'):
+        size = 99
+    else:
+        try:
+            size = int(size_str)
+        except ValueError:
+            size = None
+    if size not in (60, 70, 80, 99):
+        return row, {'error_code': 'INVALID_SIZE', 'error_msg': f"Invalid size str: {size_str}"}
+    row['size'] = size
 
     # Borderline normalization
     bl = row['borderline'].lower()
