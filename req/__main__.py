@@ -736,11 +736,15 @@ def main(max_workers, batch_size):
         while in_flight or run.uids_todo:
             loop_start = time.time()
 
-            # At capacity: block until at least one request completes
             if len(in_flight) >= effective_max_workers:
+                # At capacity: block until at least one request completes
                 done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
                 for f in done:
-                    assert(f.done())
+                    handle_result(f)
+            else:
+                # Poll for completed requests without blocking
+                for f in [f for f in in_flight if f.done()]:
+                    in_flight.remove(f)
                     handle_result(f)
 
             # Graceful shutdown: drain in-flight requests without submitting new ones
@@ -760,11 +764,6 @@ def main(max_workers, batch_size):
             elif in_flight:
                 # Have work but waiting for batch to fill up; log that we're waiting
                 logging.info(f"{shutdown_str}{len(in_flight)} requests still pending")
-
-            # Poll for completed requests without blocking
-            for f in [f for f in in_flight if f.done()]:
-                in_flight.remove(f)
-                handle_result(f)
 
             # Ensure at least 2 seconds between loop iterations
             elapsed = time.time() - loop_start
