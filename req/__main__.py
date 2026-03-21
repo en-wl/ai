@@ -679,9 +679,12 @@ def main(max_workers, batch_size):
     seq_id = 0
     effective_max_workers = max_workers
 
+    LAST_LOG_INTERVAL = 20
+    last_log_time = None
+
     shutdown_str = ""
     def enter_shutdown_mode(reason, prefix = None):
-        nonlocal shutdown_str
+        nonlocal shutdown_str, last_log_time
         if shutdown_str:
             return
         if prefix is None:
@@ -690,10 +693,11 @@ def main(max_workers, batch_size):
         shutdown_str = f"{prefix}: "
         # cause the loop to exit cleanly after draining in-flight
         run.uids_todo.clear()
+        last_log_time = None
 
     def handle_result(future):
         global consecutive_errors
-        nonlocal effective_max_workers
+        nonlocal effective_max_workers, last_log_time
         try:
             failed, redo, completed, hit_429, error_class = future.result()
         except Exception as e:
@@ -730,6 +734,8 @@ def main(max_workers, batch_size):
                     continue
                 run.uids_todo.append(uid)
 
+        last_log_time = None
+
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Main loop: continue while requests are in flight OR there's work to do
@@ -737,6 +743,7 @@ def main(max_workers, batch_size):
             loop_start = time.time()
 
             if len(in_flight) >= effective_max_workers:
+                logging.info(f"{shutdown_str}{len(in_flight)} requests in flight: waiting for at least one to finish")
                 # At capacity: block until at least one request completes
                 done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
                 for f in done:
@@ -761,9 +768,10 @@ def main(max_workers, batch_size):
                 f = executor.submit(send_request, run, model_alias, seq_id, list(uids))
                 seq_id += 1
                 in_flight.add(f)
-            elif in_flight:
-                # Have work but waiting for batch to fill up; log that we're waiting
+                last_log_time = time.time()
+            elif in_flight and (last_log_time is None or time.time() - last_log_time >= LAST_LOG_INTERVAL):
                 logging.info(f"{shutdown_str}{len(in_flight)} requests still pending")
+                last_log_time = time.time()
 
             # Ensure at least 2 seconds between loop iterations
             elapsed = time.time() - loop_start
