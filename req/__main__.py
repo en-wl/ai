@@ -195,6 +195,13 @@ class BatchSession:
         del self.uids_todo[-size:]
         return uids
 
+class RequestResult(NamedTuple):
+    failed: set = frozenset()
+    redo: set = frozenset()
+    completed: set = frozenset()
+    hit_429: bool = False
+    error_class: str = None  # 'connection', 'model', or None
+
 @dataclass
 class ParseResult:
     rows: list = field(default_factory=list)
@@ -413,9 +420,9 @@ def model_specific_instructions(model):
 
 def send_request(run, model_alias, seq_id, uids):
     if not uids:
-        return (None, None, False)
+        return RequestResult()
 
-    logging.info(f"starting {run.run_id}/{model_alias} #{seq_id+1}/{seq_id+run.num_batches}; rows: {len(uids)}")
+    logging.info(f"starting {run.run_id}/{model_alias} #{seq_id+1}/{seq_id+run.num_batches}; UIDs: {len(uids)}")
 
     model = models_config[model_alias]
     model_id = model['name']
@@ -536,7 +543,7 @@ def send_request(run, model_alias, seq_id, uids):
             resp = e.response
             if resp.status_code == 429:
                 logging.info(f"rate limited (429): {run.run_id}/{model_alias} #{seq_id+1}.")
-                return (set(), set(uids), True)
+                return RequestResult(redo=set(uids), hit_429=True)
             data = {"error": error_msg,
                     "status_code": resp.status_code,
                     "reason": resp.reason,
@@ -610,14 +617,29 @@ def send_request(run, model_alias, seq_id, uids):
             time.sleep(1)
             continue
 
+    # Classify error
+    if error_msg:
+        error_class = 'connection'
+    elif not parsed_result.rows:
+        error_class = 'model'
+    else:
+        error_class = None
 
     # Constraint violations always count as per-UID failures
     failed |= constraint_failed
     redo |= constraint_failed
 
+    completed = set(row['uid'] for row in parsed_result.rows) - constraint_failed
+
+    if error_msg and len(error_msg) > 50:
+        error_msg = error_msg[0:49] + "…"
+
     prefix = f"FAILED: {error_msg}" if error_msg else "FINISHED"
-    logging.info(f"{prefix}: {run.run_id}/{model_alias} #{seq_id+1}; id: {req_id}; redos: {len(redo)}.")
-    return (failed, redo, False)
+    ok_cnt = len(completed)
+    failed_cnt = len(failed)
+    redo_cnt = len(redo - failed)
+    logging.info(f"{prefix}: {run.run_id}/{model_alias} #{seq_id+1}; id: {req_id}; ok/redo/failed: {ok_cnt}/{redo_cnt}/{failed_cnt}")
+    return RequestResult(failed=failed, redo=redo, completed=completed, error_class=error_class)
 
 shutdown_requested = False
 interrupt_count = 0
@@ -648,6 +670,7 @@ def signal_handler(sig, frame):
         os._exit(128+sig)
 
 failed_uids = {}
+consecutive_errors = 0
 model_alias = None
 def main(max_workers, batch_size):
     run = BatchSession(model_alias, batch_size)
@@ -657,19 +680,22 @@ def main(max_workers, batch_size):
     effective_max_workers = max_workers
 
     shutdown_str = ""
-    def enter_shutdown_mode(reason):
+    def enter_shutdown_mode(reason, prefix = None):
         nonlocal shutdown_str
         if shutdown_str:
             return
+        if prefix is None:
+            prefix = reason
         logging.warning(f"*** ENTERING SHUTDOWN MODE: {reason} ***")
-        shutdown_str = f"{reason}: "
+        shutdown_str = f"{prefix}: "
         # cause the loop to exit cleanly after draining in-flight
         run.uids_todo.clear()
 
     def handle_result(future):
+        global consecutive_errors
         nonlocal effective_max_workers
         try:
-            failed, redo, hit_429 = future.result()
+            failed, redo, completed, hit_429, error_class = future.result()
         except Exception as e:
             logging.exception(f"ERROR: {e}")
             enter_shutdown_mode("failure mode")
@@ -684,6 +710,15 @@ def main(max_workers, batch_size):
             logging.warning(f"*** RATE LIMITED: max_workers capped {old} -> {effective_max_workers} ***")
             run.uids_todo += redo
             return
+
+        # Consecutive systematic/connection error tracking
+        if error_class is None:
+            consecutive_errors = 0
+        else:
+            consecutive_errors += 1
+            if consecutive_errors >= 5:
+                enter_shutdown_mode("5 consecutive failures", "failure mode")
+                return
 
         for uid in failed:
             failed_uids[uid] = failed_uids.get(uid, 0) + 1
