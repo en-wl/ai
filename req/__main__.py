@@ -627,7 +627,9 @@ def send_request(run, model_alias, seq_id, uids):
                 conn.commit()
                 break  # Success, exit the retry loop
         except sqlite3.OperationalError as e:
-            logging.info(f"SQLite timeout for {model_alias} #{seq_id+1}: {e}. Retrying in 1 second...")
+            if "locked" not in str(e):
+                raise
+            logging.info(f"SQLite locked for {model_alias} #{seq_id+1}: {e}. Retrying in 1 second...")
             time.sleep(1)
             continue
 
