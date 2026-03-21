@@ -18,6 +18,7 @@ import logging
 import sys
 import signal
 import subprocess
+
 class RetryNoTimeout(Retry):
     """Retry on status/connection errors but not on timeouts."""
     def increment(self, method=None, url=None, response=None, error=None, **kwargs):
@@ -358,11 +359,18 @@ def process_llm_response(content, expected_uids, input_data):
         errors=errors,
     )
 
-    for rows in table_rows.values():
+    failed = set(e['uid'] for e in errors if e['uid'] is not None)
+    completed = set()
+    for uid, rows in table_rows.items():
+        if uid in failed:
+            continue
         res.rows.extend(rows)
+        completed.add(uid)
 
-    completed = set(row['uid'] for row in res.rows)
-    if len(completed) == 0:
+    good_rows = sum(len(rows) for rows in table_rows.values())
+    bad_rows = sum(1 for e in errors if e['orig_line'] is not None)
+
+    if good_rows == 0:
         if not res.errors:
             res.errors.append({
                 'uid': None,
@@ -371,20 +379,25 @@ def process_llm_response(content, expected_uids, input_data):
                 'orig_line': None,
             })
         redo = set(expected_uids)
-        failed = set()
-    elif len(completed) / len(expected_uids) < 0.65:
+    elif good_rows < 2 * bad_rows:
         res.rows = []
         res.errors.append({
             'uid': None,
             'error_code': "BAD_ROWS",
-            'error_msg': f"Too many bad rows ({len(completed)}/{len(expected_uids)}).",
+            'error_msg': f"Too many bad rows ({bad_rows} bad vs {good_rows} good).",
             'orig_line': None,
         })
         redo = set(expected_uids)
-        failed = set(expected_uids) - completed
     else:
         redo = set(expected_uids) - completed
-        failed = set(expected_uids) - completed
+        missing = redo - failed
+        if missing:
+            res.errors.append({
+                'uid': None,
+                'error_code': "MISSING_UIDS",
+                'error_msg': f"Missing {len(missing)}/{len(expected_uids)} UIDs.",
+                'orig_line': None,
+            })
 
     return res, failed, redo
 
@@ -556,10 +569,10 @@ def send_request(run, model_alias, seq_id, uids):
         error_msg = f"{type(e).__name__}: {e}"
         data["error"] = error_msg
 
-    if error_msg:
+    try:
+        content = data["choices"][0]["message"]["content"] or '' # to guard against None value
+    except (KeyError, IndexError, TypeError):
         content = ''
-    else:
-        content = data["choices"][0]["message"]["content"]
 
     parsed_result, failed, redo = process_llm_response(content, uids, run.input_data)
 
