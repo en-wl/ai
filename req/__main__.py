@@ -10,6 +10,7 @@ import json
 import re
 from pathlib import Path
 from dataclasses import dataclass, field
+from typing import NamedTuple
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from collections import defaultdict
 import time
@@ -589,12 +590,9 @@ def send_request(run, model_alias, seq_id, uids):
                             'error_msg': str(e),
                             'orig_line': row.get('orig_line'),
                         })
-
-                # Add constraint failures to redo/failed sets
                 constraint_failed = set(e['uid'] for e in insert_errors)
-                redo |= constraint_failed
-                failed |= constraint_failed
-                parsed_result.errors.extend(insert_errors)
+                conn.executemany("delete from results where req_id = ? and uid = ?",
+                                 ((req_id, uid) for uid in constraint_failed))
 
                 conn.executemany(
                     """INSERT INTO errors (req_id, uid, error_code, error_msg, orig_line)
@@ -611,6 +609,11 @@ def send_request(run, model_alias, seq_id, uids):
             logging.info(f"SQLite locked for {model_alias} #{seq_id+1}: {e}. Retrying in 1 second...")
             time.sleep(1)
             continue
+
+
+    # Constraint violations always count as per-UID failures
+    failed |= constraint_failed
+    redo |= constraint_failed
 
     prefix = f"FAILED: {error_msg}" if error_msg else "FINISHED"
     logging.info(f"{prefix}: {run.run_id}/{model_alias} #{seq_id+1}; id: {req_id}; redos: {len(redo)}.")
