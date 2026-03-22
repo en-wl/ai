@@ -479,6 +479,6 @@ def send_request(run, model_alias, seq_id, uids):
     prefix = f"FAILED: {error_msg}" if error_msg else "FINISHED"
     ok_cnt = len(completed)
     failed_cnt = len(failed)
-    redo_cnt = len(redo - failed)
-    logging.info(f"{prefix}: {run.run_id}/{model_alias} #{seq_id+1}; id: {req_id}; ok/redo/failed: {ok_cnt}/{redo_cnt}/{failed_cnt}")
+    missing_cnt = len(redo - failed)
+    logging.info(f"{prefix}: {run.run_id}/{model_alias} #{seq_id+1}; id: {req_id}; ok/err/…: {ok_cnt}/{failed_cnt}/{missing_cnt}")
     return RequestResult(failed=failed, redo=redo, completed=completed, error_class=error_class)
