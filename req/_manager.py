@@ -98,6 +98,8 @@ def run(models, extra_args=()):
 
     log.info(f"launching {len(models)} models: {', '.join(models)}")
 
+    last_lines = {}
+
     # Per-child output reader thread
     def reader_thread(proc, model):
         pid = proc.pid
@@ -106,6 +108,9 @@ def run(models, extra_args=()):
             for line in proc.stdout:
                 for subline in line.splitlines(True):
                     with write_lock:
+                        stripped = subline.rstrip('\n')
+                        if stripped:
+                            last_lines[model] = stripped
                         sys.stderr.write(prefix + subline)
                         if not subline.endswith('\n'):
                             sys.stderr.write('\n')
@@ -148,11 +153,12 @@ def run(models, extra_args=()):
     for t in threads:
         t.join(timeout=5)
 
-    # Summary
-    failures = {m: rc for m, rc in results.items() if rc != 0}
-    if not failures:
-        log.info("all models completed successfully")
-    else:
-        parts = ', '.join(f"{m}(rc={rc})" for m, rc in failures.items())
-        log.info(f"completed with errors: {parts}")
-        sys.exit(1)
+    # Summary: echo each child's END line
+    for model in models:
+        last = last_lines.get(model, '')
+        idx = last.find('END: ')
+        if idx >= 0:
+            log.info(last[idx + len('END: '):])
+        else:
+            log.info(f"{model}: UNKNOWN (rc={results.get(model, '?')})")
+    sys.exit(max(results.values()))

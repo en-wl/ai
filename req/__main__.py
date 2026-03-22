@@ -11,6 +11,9 @@ import subprocess
 from req._config import *
 from req._request import *
 
+STATE_NAMES = {0: "FINISHED", 1: "SHUTDOWN", 2: "FAILED", 3: "ABORTED"}
+exit_code = 0
+
 bad_uids = set()
 class BatchSession:
     def __init__(self, model_alias, batch_size):
@@ -244,7 +247,14 @@ def main(max_workers, batch_size):
 
         if shutdown_str:
             logging.info(f"ABORTED RUN {run.run_id}/{model_alias}")
-            sys.exit(1)
+            global exit_code
+            if abort_event.is_set():
+                exit_code = max(exit_code, 3)  # ABORTED
+            elif "failure" in shutdown_str:
+                exit_code = max(exit_code, 2)  # FAILED
+            else:
+                exit_code = max(exit_code, 1)  # SHUTDOWN
+            return None
 
     logging.info(f"COMPLETED RUN {run.run_id}/{model_alias}")
     return True
@@ -254,7 +264,7 @@ if __name__ == '__main__':
     if not args:
         print(f"usage: python3 -m req <model> [model2 ...] [max_workers] [batch_size]")
         print(f"\navailable models: {', '.join(models_config.keys())}")
-        sys.exit(1)
+        sys.exit(2)
 
     models = [a for a in args if a in models_config]
     rest = [a for a in args if a not in models_config]
@@ -268,7 +278,7 @@ if __name__ == '__main__':
     if not models:
         print(f"error: no valid model specified")
         print(f"available models: {', '.join(models_config.keys())}")
-        sys.exit(1)
+        sys.exit(2)
 
     with sqlite3.connect(db) as conn:
         conn.executemany("insert or ignore into models values (?)",
@@ -287,10 +297,13 @@ if __name__ == '__main__':
         logging.info(f"BEGIN: {model_alias}: max_workers={max_workers}; batch_size={batch_size}")
         time.sleep(2)
 
+        cont = True
         while True:
-           if post_run is not None:
-               subprocess.run(post_run, check=True)
-           if not main(max_workers, batch_size):
-              break
+            if post_run is not None:
+                subprocess.run(post_run, check=True)
+            if not cont:
+                break
+            cont = main(max_workers, batch_size)
 
-        logging.info(f"END: {model_alias}")
+        logging.info(f"END: {model_alias}: {STATE_NAMES[exit_code]}; skipped {len(bad_uids)} UIDs")
+        sys.exit(exit_code)
