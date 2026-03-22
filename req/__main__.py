@@ -159,6 +159,7 @@ headers = {
 
 instructions = Path(system_prompt).read_text(encoding="utf-8")
 
+bad_uids = set()
 class BatchSession:
     def __init__(self, model_alias, batch_size):
         self.input_strings = {}
@@ -173,8 +174,9 @@ class BatchSession:
                 self.input_data[uid] = dict(zip(input_cols, row))
 
         self.batch_size = batch_size
-        self.uids_todo = list(self.input_strings.keys())
-        random.shuffle(self.uids_todo)
+        self._uids_todo = []
+        self.push(*self.input_strings.keys())
+        self.shuffle()
 
         model_config = models_config[model_alias]
         temperature = model_config.get('temperature', 1) if temp_override is None else temp_override
@@ -189,11 +191,26 @@ class BatchSession:
             self.run_id = cur.lastrowid
             conn.commit()
 
+    def todo_size(self):
+        return len(self._uids_todo)
+
+    def clear_todo(self):
+        self._uids_todo.clear()
+
+    def push(self, *uids):
+        for uid in uids:
+            if uid in bad_uids:
+                continue
+            self._uids_todo.append(uid)
+
+    def shuffle(self):
+        random.shuffle(self._uids_todo)
+
     def next(self):
-        self.num_batches = ceil(len(self.uids_todo) / self.batch_size)
-        size = floor(len(self.uids_todo) / self.num_batches) if self.num_batches > 0 else 0
-        uids = self.uids_todo[-size:]
-        del self.uids_todo[-size:]
+        self.num_batches = ceil(len(self._uids_todo) / self.batch_size)
+        size = floor(len(self._uids_todo) / self.num_batches) if self.num_batches > 0 else 0
+        uids = self._uids_todo[-size:]
+        del self._uids_todo[-size:]
         return uids
 
 class RequestResult(NamedTuple):
@@ -687,6 +704,8 @@ consecutive_errors = 0
 model_alias = None
 def main(max_workers, batch_size):
     run = BatchSession(model_alias, batch_size)
+    if not run.todo_size():
+        return False
 
     in_flight = set()
     seq_id = 0
@@ -694,7 +713,6 @@ def main(max_workers, batch_size):
 
     LAST_LOG_INTERVAL = 20
     last_log_time = None
-
     shutdown_str = ""
     def enter_shutdown_mode(reason, prefix = None):
         nonlocal shutdown_str, last_log_time
@@ -705,7 +723,7 @@ def main(max_workers, batch_size):
         logging.warning(f"*** ENTERING SHUTDOWN MODE: {reason} ***")
         shutdown_str = f"{prefix}: "
         # cause the loop to exit cleanly after draining in-flight
-        run.uids_todo.clear()
+        run.clear_todo()
         last_log_time = None
 
     def handle_result(future):
@@ -725,7 +743,7 @@ def main(max_workers, batch_size):
             old = effective_max_workers
             effective_max_workers = max(1, min(len(in_flight), old-1))
             logging.warning(f"*** RATE LIMITED: max_workers capped {old} -> {effective_max_workers} ***")
-            run.uids_todo += redo
+            run.push(*redo)
             return
 
         # Consecutive systematic/connection error tracking
@@ -737,22 +755,37 @@ def main(max_workers, batch_size):
                 enter_shutdown_mode("5 consecutive failures", "failure mode")
                 return
 
+        # Reset failure count for UIDs that succeeded
+        for uid in completed:
+            failed_uids.pop(uid, None)
+
+        # Track per-UID failures (always active)
         for uid in failed:
             failed_uids[uid] = failed_uids.get(uid, 0) + 1
+        new_bad_uids = {uid for uid, cnt in failed_uids.items() if cnt >= 3}
+        if new_bad_uids:
+            bad_uids.update(new_bad_uids)
+            for uid in new_bad_uids:
+                del failed_uids[uid]
+            sorted_uids = sorted(new_bad_uids)
+            if len(sorted_uids) > 8:
+                uids_str = ','.join(str(u) for u in sorted_uids[:7]) + ',…'
+            else:
+                uids_str = ','.join(str(u) for u in sorted_uids)
+            logging.warning(f"Skipping {len(new_bad_uids)} UIDs (3+ consecutive failures): {uids_str}")
+            # reset consecutive_errors as the errors may of been due to specific UIDS.
+            consecutive_errors = 0
 
+        # Requeue
         if ENABLE_REDO:
-            for uid in redo:
-                if failed_uids.get(uid, 0) >= 3:
-                    logging.info(f"skipping {uid}: to many failures")
-                    continue
-                run.uids_todo.append(uid)
+            run.push(*redo)
 
         last_log_time = None
 
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Main loop: continue while requests are in flight OR there's work to do
-        while in_flight or run.uids_todo:
+        while in_flight or run.todo_size():
             loop_start = time.time()
 
             if len(in_flight) >= effective_max_workers:
@@ -776,7 +809,7 @@ def main(max_workers, batch_size):
             #   - redo is disabled (submit any size batch), OR
             #   - we have a full batch worth of work, OR
             #   - nothing in flight (submit final partial batch)
-            if run.uids_todo and (not ENABLE_REDO or len(run.uids_todo) >= batch_size or not in_flight):
+            if run.todo_size() and (not ENABLE_REDO or run.todo_size() >= batch_size or not in_flight):
                 uids = run.next()
                 f = executor.submit(send_request, run, model_alias, seq_id, list(uids))
                 seq_id += 1
@@ -794,7 +827,7 @@ def main(max_workers, batch_size):
         if shutdown_str:
             sys.exit(1)
 
-    return set(run.input_strings.keys())
+    return True
 
 if __name__ == '__main__':
     # Set up signal handler for Ctrl-C
@@ -824,7 +857,5 @@ if __name__ == '__main__':
     while True:
        if post_run is not None:
            subprocess.run(post_run, check=True)
-       uids = main(max_workers, batch_size)
-       if not uids or uids <= failed_uids.keys():
+       if not main(max_workers, batch_size):
           break
-       prev_uid = uids
