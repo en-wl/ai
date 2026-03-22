@@ -27,6 +27,7 @@ def populate_size_scores(db_path: str) -> None:
         with conn:
             conn.executescript(
                 """
+                begin immediate;
                 drop table if exists model_size_scores;
                 create table model_size_scores (
                   uid integer not null,

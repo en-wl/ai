@@ -122,6 +122,7 @@ def main(max_workers, batch_size):
     run = BatchSession(model_alias, batch_size)
     if not run.todo_size():
         return False
+    logging.info(f"STARTING RUN {run.run_id}/{model_alias}; UIDs: {run.todo_size()}")
 
     in_flight = set()
     seq_id = 0
@@ -185,7 +186,7 @@ def main(max_workers, batch_size):
                 uids_str = ','.join(str(u) for u in sorted_uids[:7]) + ',…'
             else:
                 uids_str = ','.join(str(u) for u in sorted_uids)
-            logging.warning(f"Skipping {len(new_bad_uids)} UIDs (3+ consecutive failures): {uids_str}")
+            logging.warning(f"{model_alias}: SKIPPING {len(new_bad_uids)} UIDs (3+ consecutive failures): {uids_str}")
             # reset consecutive_errors as the errors may of been due to specific UIDS.
             consecutive_errors = 0
 
@@ -203,7 +204,7 @@ def main(max_workers, batch_size):
             loop_start = time.time()
 
             if len(in_flight) >= effective_max_workers:
-                logging.info(f"{shutdown_str}{len(in_flight)} requests in flight: waiting for at least one to finish")
+                logging.info(f"{shutdown_str}{run.run_id}/{model_alias}: {len(in_flight)} requests in flight: waiting for at least one to finish")
                 # At capacity: block until at least one request completes
                 done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
                 for f in done:
@@ -233,7 +234,7 @@ def main(max_workers, batch_size):
                 in_flight.add(f)
                 last_log_time = time.time()
             elif in_flight and (last_log_time is None or time.time() - last_log_time >= LAST_LOG_INTERVAL):
-                logging.info(f"{shutdown_str}{len(in_flight)} requests still pending")
+                logging.info(f"{shutdown_str}{run.run_id}/{model_alias}: {len(in_flight)} requests still pending")
                 last_log_time = time.time()
 
             # Ensure at least 2 seconds between loop iterations
@@ -242,38 +243,54 @@ def main(max_workers, batch_size):
                 time.sleep(2 - elapsed)
 
         if shutdown_str:
+            logging.info(f"ABORTED RUN {run.run_id}/{model_alias}")
             sys.exit(1)
 
+    logging.info(f"COMPLETED RUN {run.run_id}/{model_alias}")
     return True
 
 if __name__ == '__main__':
-    # Set up signal handler for Ctrl-C
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    if len(sys.argv) < 2:
-        print(f"usage: python3 -m req <model> [max_workers] [batch_size]")
+    args = sys.argv[1:]
+    if not args:
+        print(f"usage: python3 -m req <model> [model2 ...] [max_workers] [batch_size]")
         print(f"\navailable models: {', '.join(models_config.keys())}")
         sys.exit(1)
 
-    model_alias = sys.argv[1]
-    batch_size = models_config[model_alias]['batch_size']
+    models = [a for a in args if a in models_config]
+    rest = [a for a in args if a not in models_config]
     max_workers = 100
-    if len(sys.argv) > 2 and sys.argv[2] != '-':
-        max_workers = int(sys.argv[2])
-    if len(sys.argv) > 3:
-        batch_size = int(sys.argv[3])
+    batch_size_override = None
+    if rest and rest[0] != '-':
+        max_workers = int(rest[0])
+    if len(rest) > 1:
+        batch_size_override = int(rest[1])
+
+    if not models:
+        print(f"error: no valid model specified")
+        print(f"available models: {', '.join(models_config.keys())}")
+        sys.exit(1)
 
     with sqlite3.connect(db) as conn:
         conn.executemany("insert or ignore into models values (?)",
                          ((k,) for k in models_config.keys()))
 
+    if len(models) > 1:
+        from req._manager import run as manager_run
+        manager_run(models, extra_args=rest)
+    else:
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
 
-    print(f"model: {model_alias}; max_workers: {max_workers}; batch_size: {batch_size}")
-    time.sleep(2)
+        model_alias = models[0]
+        batch_size = batch_size_override or models_config[model_alias]['batch_size']
 
-    while True:
-       if post_run is not None:
-           subprocess.run(post_run, check=True)
-       if not main(max_workers, batch_size):
-          break
+        logging.info(f"BEGIN: {model_alias}: max_workers={max_workers}; batch_size={batch_size}")
+        time.sleep(2)
+
+        while True:
+           if post_run is not None:
+               subprocess.run(post_run, check=True)
+           if not main(max_workers, batch_size):
+              break
+
+        logging.info(f"END: {model_alias}")
