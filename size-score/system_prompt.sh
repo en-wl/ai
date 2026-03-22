@@ -17,33 +17,36 @@ cat <<'EOF'
 ## Overview and Instructions
 
 I am going to give you some English words to evaluate, Most of the fields in
-the table should be self-explanatory.  All entries in a single row of the
-table should be evaluated together as a single lemma, please use the `uid` in
-any output when referencing that lemma.
+the table should be self-explanatory.  Please use the `uid` in any output when
+referencing that lemma.
 
-The POSes are normally one of: noun (including proper-nouns), pronoun, verb,
-adj, or adv, conj, prep, det, interj.
-
-If a POS ends is a single letter the exact POS is not known.  These POSes are:
+If a POS is a single letter the exact POS is not known.  These POSes are:
 
 ```
-  ?: unknown
   n: likely noun
   m: likely verb, possible noun
   a: adjective or adverb
+  ?: unknown
 ```
 
-Words with the `?` POS are likely lemmas, so assume it is.  If the word is
-clearly not a lemma, evaluate it anyway, but make a note of the actual lemma.
+If the POS is one of `n`, `m`, or `a` the POS was a best guess based on
+derived forms found in the wordlist, evaluate the lemma with this is mind.
 
-Evaluate all lemmas given together as a single unit.
+Words with the `?` POS are likely lemmas.  If the word is clearly not a lemma,
+evaluate it anyway, but make a note of the actual lemma.
+
+If the POS is not a single letter, the exact POS is known.  When an exact POS
+is given, evaluate the word for the given POS only.  The exact POSes are one of
+one of: noun (including proper-nouns), pronoun, verb, adj, or adv, conj, prep,
+det, interj.
+
 
 ## Output
 
 Return the results as a Markdown formatted table, with the following columns.
 
   - `uid`
-  - `lemmas`
+  - `words`
   - `pos`
   - `size` -- one of `60`, `70`, `80`, or `excluded`
   - `borderline` -- `No` if there were no borderline decisions;
@@ -58,13 +61,16 @@ Output at least one row for each input row.  Do not treat excluded words as
 special cases; use the word "excluded" only in the size column and fill out
 the other columns as you would if the word was included.
 
+Always include original lemma given without modifications.  If the word was
+clearly not a lemma than also include the lemma and seperate the two words
+with a comma.
+
+If an exact POS is given, do not correct it.  Mark the lemma as excluded if
+the POS is invalid for the lemma.
+
 If an exact POS was not given, replace the POS with the correct one.  If the
 lemma has multiple POSes, use one row for each POS and evaluate each new POS
 separately.
-
-If the POS was `?` and the word is clearly not a lemma, add the lemma to the
-list in the `lemmas` column, but also include the original word and make a
-note of this fact in the `size_notes` column.
 
 A header row for the table is required, but a legend is unnecessary.
 

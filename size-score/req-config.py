@@ -3,6 +3,9 @@ from unidecode import unidecode
 x_title = 'Corpus Size Scoring'
 post_run = ['python3', 'populate_size_scores.py']
 
+# models_config['qwen3-235b-a22b']['batch_size'] = 50
+models_config['deepseek-v3.2']['batch_size'] = 50
+
 # Canonical POS codes matching size-score-simple
 _pos_map = {
     'n': 'n', 'noun': 'n',
@@ -37,10 +40,10 @@ def validate_row(row, input_row):
                          'error_msg': f'Input POS is {input_pos} but LLM returned {row["pos"]}'}
 
     # Lemma matching (unidecode overlap check)
-    normalized = set(unidecode(l.strip().lower()) for l in row['lemmas'].split(','))
-    expected = set(unidecode(l.strip().lower()) for l in input_row['lemmas'].split(','))
-    if normalized.isdisjoint(expected):
-        return row, {'error_code': 'LEMMA_MISMATCH', 'error_msg': f'Lemma mismatch: {normalized}'}
+    input_lemma =  unidecode(input_row['lemma']).strip().lower()
+    words = set(unidecode(w).strip().lower() for w in row['words'].split(','))
+    if input_lemma not in words:
+        return row, {'error_code': 'LEMMA_MISMATCH', 'error_msg': f"Lemma mismatch, expected: {input_row['lemma']}"}
 
     # Parse and check size
     size_str = row['size'].lower()
