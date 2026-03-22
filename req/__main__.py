@@ -266,17 +266,47 @@ if __name__ == '__main__':
         print(f"\navailable models: {', '.join(models_config.keys())}")
         sys.exit(2)
 
-    models = [a for a in args if a in models_config]
-    rest = [a for a in args if a not in models_config]
+    # Parse: model ... [<num>] [<num>]
+    # A model is anything not starting with a digit or '-'
+    i = 0
+    models = []
+    while i < len(args) and not (args[i][:1].isdigit() or args[i][:1] == '-'):
+        models.append(args[i])
+        i += 1
+
     max_workers = 100
     batch_size_override = None
-    if rest and rest[0] != '-':
-        max_workers = int(rest[0])
-    if len(rest) > 1:
-        batch_size_override = int(rest[1])
+    rest = []
+    if i < len(args):
+        try:
+            max_workers = int(args[i])
+        except ValueError:
+            print(f"error: invalid max_workers value: {args[i]}")
+            sys.exit(2)
+        rest.append(args[i])
+        i += 1
+    if i < len(args) and (args[i][:1].isdigit() or args[i][:1] == '-'):
+        try:
+            batch_size_override = int(args[i])
+        except ValueError:
+            print(f"error: invalid batch_size value: {args[i]}")
+            sys.exit(2)
+        rest.append(args[i])
+        i += 1
+
+    if i < len(args):
+        print(f"error: unexpected extra arguments: {' '.join(args[i:])}")
+        print(f"usage: python3 -m req <model> [model2 ...] [max_workers] [batch_size]")
+        sys.exit(2)
+
+    bad = [m for m in models if m not in models_config]
+    if bad:
+        print(f"error: unknown model(s): {', '.join(bad)}")
+        print(f"available models: {', '.join(models_config.keys())}")
+        sys.exit(2)
 
     if not models:
-        print(f"error: no valid model specified")
+        print(f"error: no model specified")
         print(f"available models: {', '.join(models_config.keys())}")
         sys.exit(2)
 
