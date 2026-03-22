@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from pathlib import Path
 
 # === Configurable defaults (can be overridden by req-config.py) ===
@@ -7,6 +8,7 @@ db = 'data.db'
 system_prompt = 'system_prompt.md'
 post_run = None
 ENABLE_REDO = False
+abort_event = threading.Event()
 temp_override = None
 validate_row = None
 key_file = 'key.txt'

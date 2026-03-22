@@ -373,6 +373,9 @@ def send_request(run, model_alias, seq_id, uids):
             if now - last_data_time > timeout:
                 raise requests.exceptions.Timeout(f"No data received for {timeout}s")
 
+            if abort_event.is_set():
+                logging.info(f"aborting: {run.run_id}/{model_alias} #{seq_id+1}")
+                break
 
     except requests.HTTPError as e:
         error_msg = f"{type(e).__name__}: {e}"

@@ -91,13 +91,29 @@ def signal_handler(sig, frame):
     global shutdown_requested, interrupt_count
     interrupt_count += 1
 
+    if sig == signal.SIGTERM:
+        # SIGTERM goes straight to abort phase
+        if not shutdown_requested:
+            shutdown_requested = True
+        if not abort_event.is_set():
+            logging.info("\nSIGTERM received. Aborting current requests...")
+            logging.info("Send again to force immediate exit.")
+            abort_event.set()
+        else:
+            logging.info("\nForce exit requested. Exiting immediately.")
+            os._exit(128 + sig)
+        return
+
     if interrupt_count == 1:
         logging.info("\nCtrl-C detected. Finishing current requests and shutting down gracefully...")
-        logging.info("Press Ctrl-C again to force immediate exit.")
+        logging.info("Press Ctrl-C again to abort current requests.")
         shutdown_requested = True
+    elif interrupt_count == 2:
+        logging.info("\nAborting current requests. Press Ctrl-C again to force exit.")
+        abort_event.set()
     else:
         logging.info("\nForce exit requested. Exiting immediately.")
-        os._exit(128+sig)
+        os._exit(128 + sig)
 
 failed_uids = {}
 consecutive_errors = 0
@@ -151,9 +167,6 @@ def main(max_workers, batch_size):
             consecutive_errors = 0
         else:
             consecutive_errors += 1
-            if consecutive_errors >= 5:
-                enter_shutdown_mode("5 consecutive failures", "failure mode")
-                return
 
         # Reset failure count for UIDs that succeeded
         for uid in completed:
@@ -201,9 +214,12 @@ def main(max_workers, batch_size):
                     in_flight.remove(f)
                     handle_result(f)
 
+            
             # Graceful shutdown: drain in-flight requests without submitting new ones
             if shutdown_requested:
                 enter_shutdown_mode("shutdown requested")
+            elif consecutive_errors >= 5:
+                enter_shutdown_mode("5 consecutive failures", "failure mode")
 
             # Submit new work if:
             #   - there's work to do, AND
@@ -233,6 +249,7 @@ def main(max_workers, batch_size):
 if __name__ == '__main__':
     # Set up signal handler for Ctrl-C
     signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     if len(sys.argv) < 2:
         print(f"usage: python3 -m req <model> [max_workers] [batch_size]")
