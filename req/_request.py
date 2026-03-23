@@ -447,7 +447,7 @@ def send_request(run, model_alias, seq_id, uids):
                     """INSERT INTO errors (req_id, uid, error_code, error_msg, orig_line)
                         VALUES (?, ?, ?, ?, ?)""",
                     ((req_id, err['uid'], err['error_code'], err['error_msg'], err['orig_line'])
-                     for err in parsed_result.errors)
+                     for err in [*parsed_result.errors, *insert_errors])
                 )
 
                 conn.commit()
