@@ -20,34 +20,42 @@ I am going to give you some English words to evaluate, Most of the fields in
 the table should be self-explanatory.  Please use the `uid` in any output when
 referencing that lemma.
 
-If a POS is a single letter the exact POS is not known.  These POSes are:
+The POS is one of:
 
 ```
   n: likely noun
+  v: likely verb
   m: likely verb, possible noun
   a: adjective or adverb
   ?: unknown
 ```
 
-If the POS is one of `n`, `m`, or `a` the POS was a best guess based on
-derived forms found in the wordlist, evaluate the lemma with this is mind.
+The words given are the likely lemmas and POSes from processing a raw list of
+words.  The POS is a best guess based on derived forms found in the wordlist.
+Words with the `?` POS are likely lemmas, but could be an inflected form the
+script failed to pick on.
 
-Words with the `?` POS are likely lemmas.  If the word is clearly not a lemma,
-evaluate it anyway, but make a note of the actual lemma.
+Evaluate each word as a lemma a strong preference to the given POS.  If the
+word is not a lemma evaluate the lemma of the word, but retain the word given
+in input in the output.
 
-If the POS is not a single letter, the exact POS is known.  When an exact POS
-is given, evaluate the word for the given POS only.  The exact POSes are one of
-one of: noun (including proper-nouns), pronoun, verb, adj, or adv, conj, prep,
-det, interj.
+If a `-ed` or `-ing` form of a word is given with a `?` POS lean strongly
+towards evaluating the word as an adj. or noun rather than assuming it an
+inflected form of a verb.
 
 
 ## Output
 
-Return the results as a Markdown formatted table, with the following columns.
+Return the results as a Markdown table with the following columns.
 
   - `uid`
-  - `words`
-  - `pos`
+  - `words` -- the original word as given, plus the lemma if the word is 
+               an inflected form; separate words with a comma; for 
+               example, if the word was `buildings` the string should be
+               `buildings, building`
+  - `pos` -- the corrected POS, one of: `noun` (including proper-nouns), 
+               `pronoun`, `verb`, `adj`, `adv`, `conj`, `prep`, `det`, 
+               `interj`, `abbr`, `?`
   - `size` -- one of `60`, `70`, `80`, or `excluded`
   - `borderline` -- `No` if there were no borderline decisions;
                     `60/70` or `70/80` if there was a size borderline decision;
@@ -55,22 +63,17 @@ Return the results as a Markdown formatted table, with the following columns.
                     if both borderlines cases apply, separate with a comma
   - `size_notes` -- one or two sentences justifying the size or exclude decision
 
-Do not use any additional formatting for entries in the table.
+Do not use any additional formatting for entries in the table.  Ensure each
+row has exactly 6 columns.
 
 Output at least one row for each input row.  Do not treat excluded words as
-special cases; use the word "excluded" only in the size column and fill out
+special cases; use the word `excluded` only in the size column and fill out
 the other columns as you would if the word was included.
 
-Always include original lemma given without modifications.  If the word was
-clearly not a lemma than also include the lemma and seperate the two words
-with a comma.
-
-If an exact POS is given, do not correct it.  Mark the lemma as excluded if
-the POS is invalid for the lemma.
-
-If an exact POS was not given, replace the POS with the correct one.  If the
-lemma has multiple POSes, use one row for each POS and evaluate each new POS
-separately.
+Correct the guessed POS to the correct one.  If the lemma has multiple POSes,
+use one row for each POS and evaluate each new POS separately.  Use the same
+UID for each column (the table is keyed by UID, POS, not just UID).  Only use
+`?` for excluded words and only when the word is not recognized as valid.
 
 A header row for the table is required, but a legend is unnecessary.
 

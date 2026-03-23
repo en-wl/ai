@@ -1,6 +1,6 @@
 create table if not exists input (
   uid integer primary key,
-  lemma text not null,
+  word text not null,
   pos not null
 );
 
