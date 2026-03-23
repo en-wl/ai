@@ -113,28 +113,12 @@ def process_llm_response(content, expected_uids, input_data):
                     })
                     continue
 
-            # Check for malformed row
-            if len(cells) < len(result_data_cols):
-                errors.append({
-                    'uid': uid,
-                    'error_code': "MALFORMED_ROW",
-                    'error_msg': f"Malformed row (cols < {len(result_data_cols)})",
-                    'orig_line': line
-                })
-                continue
-
-            # Join overflow cells into last column
-            if len(cells) > len(result_data_cols):
-                cells[len(result_data_cols)-1] = " | ".join(cells[len(result_data_cols)-1:])
-                cells = cells[:len(result_data_cols)]
-
-            # Map cells to column names
-            row = dict(zip(result_data_cols, cells))
-            row['uid'] = uid  # ensure uid is int
-
-            # validate_row callback
+            # validate_row callback (before column-count check so it can fix cells)
             if validate_row is not None:
-                row, err = validate_row(row, input_data[uid])
+                try:
+                    cells, err = validate_row(cells, input_data[uid])
+                except IndexError:
+                    err = None  # fall through to MALFORMED_ROW check
                 if err is not None:
                     errors.append({
                         'uid': uid,
@@ -143,6 +127,20 @@ def process_llm_response(content, expected_uids, input_data):
                         'orig_line': line
                     })
                     continue
+
+            # Check for malformed row
+            if len(cells) != len(result_data_cols):
+                errors.append({
+                    'uid': uid,
+                    'error_code': "MALFORMED_ROW",
+                    'error_msg': f"Malformed row ({len(cells)} cols, expected {len(result_data_cols)})",
+                    'orig_line': line
+                })
+                continue
+
+            # Map cells to column names
+            row = dict(zip(result_data_cols, cells))
+            row['uid'] = uid  # ensure uid is int
 
             # Post-validation type fixes
             try:

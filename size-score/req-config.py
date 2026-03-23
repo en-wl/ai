@@ -6,38 +6,39 @@ post_run = ['python3', 'populate_size_scores.py']
 # models_config['qwen3-235b-a22b']['batch_size'] = 50
 models_config['deepseek-v3.2']['batch_size'] = 50
 
-def validate_row(row, input_row):
+def validate_row(cells, input_row):
+    ci = result_col_idx
+
     # POS normalization
-    row['pos'] = row['pos'].strip().lower()
+    cells[ci['pos']] = cells[ci['pos']].strip().lower()
 
     # Lemma matching (unidecode overlap check)
-    input_word =  unidecode(input_row['word']).strip().lower()
-    words = set(unidecode(w).strip().lower() for w in row['words'].split(','))
+    input_word = unidecode(input_row['word']).strip().lower()
+    words = set(unidecode(w).strip().lower() for w in cells[ci['words']].split(','))
     if input_word not in words:
-        return row, {'error_code': 'LEMMA_MISMATCH', 'error_msg': f"Lemma mismatch, expected: {input_row['word']}"}
+        return cells, {'error_code': 'LEMMA_MISMATCH', 'error_msg': f"Lemma mismatch, expected: {input_row['word']}"}
 
     # Parse and check size
-    size_str = row['size'].lower()
+    size_str = cells[ci['size']].lower()
     if size_str in ('excluded', 'exclude'):
-        size = 99
+        cells[ci['size']] = '99'
     else:
         try:
-            size = int(size_str)
+            int(size_str)
         except ValueError:
-            size = None
-    if size not in (60, 70, 80, 99):
-        return row, {'error_code': 'INVALID_SIZE', 'error_msg': f"Invalid size str: {size_str}"}
-    row['size'] = size
+            return cells, {'error_code': 'INVALID_SIZE', 'error_msg': f"Invalid size str: {size_str}"}
+        if int(size_str) not in (60, 70, 80, 99):
+            return cells, {'error_code': 'INVALID_SIZE', 'error_msg': f"Invalid size str: {size_str}"}
 
     # Borderline normalization
-    bl = row['borderline'].lower()
+    bl = cells[ci['borderline']].lower()
     if bl in ('', 'no'):
-        row['borderline'] = ''
+        cells[ci['borderline']] = ''
     elif bl in ('60/70', '70/80'):
-        row['borderline'] = bl
+        cells[ci['borderline']] = bl
     elif bl == 'incl/excl':
-        row['borderline'] = '80/99' if row['size'] == 80 else ''
+        cells[ci['borderline']] = '80/99' if int(cells[ci['size']]) == 80 else ''
     else:
-        return row, {'error_code': 'INVALID_BORDERLINE', 'error_msg': f'Invalid borderline: {bl}'}
+        return cells, {'error_code': 'INVALID_BORDERLINE', 'error_msg': f'Invalid borderline: {bl}'}
 
-    return row, None
+    return cells, None

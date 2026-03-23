@@ -3,35 +3,36 @@ from unidecode import unidecode
 x_title = 'Corpus Size Scoring'
 post_run = ['python3', 'populate_size_scores.py']
 
-def validate_row(row, input_row):
+def validate_row(cells, input_row):
+    ci = result_col_idx
+
     # Lemma matching
-    normalized = set(unidecode(l.strip().lower()) for l in row['lemmas'].split(','))
+    normalized = set(unidecode(l.strip().lower()) for l in cells[ci['lemmas']].split(','))
     expected = set(unidecode(l.strip().lower()) for l in input_row['lemmas'].split(','))
     if normalized.isdisjoint(expected):
-        return row, {'error_code': 'LEMMA_MISMATCH', 'error_msg': f'Lemma mismatch: {normalized}'}
+        return cells, {'error_code': 'LEMMA_MISMATCH', 'error_msg': f'Lemma mismatch: {normalized}'}
 
     # Parse and check size
-    size_str = row['size'].lower()
+    size_str = cells[ci['size']].lower()
     if size_str in ('excluded', 'exclude'):
-        size = 99
+        cells[ci['size']] = '99'
     else:
         try:
-            size = int(size_str)
+            int(size_str)
         except ValueError:
-            size = None
-    if size not in (60, 70, 80, 99):
-        return row, {'error_code': "INVALID_SIZE", 'error_msg': f"Invalid size str: {size_str}"}
-    row['size'] = size
+            return cells, {'error_code': "INVALID_SIZE", 'error_msg': f"Invalid size str: {size_str}"}
+        if int(size_str) not in (60, 70, 80, 99):
+            return cells, {'error_code': "INVALID_SIZE", 'error_msg': f"Invalid size str: {size_str}"}
 
     # Borderline normalization
-    bl = row['borderline'].lower()
+    bl = cells[ci['borderline']].lower()
     if bl in ('', 'no'):
-        row['borderline'] = ''
+        cells[ci['borderline']] = ''
     elif bl in ('60/70', '70/80'):
-        row['borderline'] = bl
+        cells[ci['borderline']] = bl
     elif bl == 'incl/excl':
-        row['borderline'] = '80/99' if row['size'] == 80 else ''
+        cells[ci['borderline']] = '80/99' if int(cells[ci['size']]) == 80 else ''
     else:
-        return row, {'error_code': 'INVALID_BORDERLINE', 'error_msg': f'Invalid borderline: {bl}'}
+        return cells, {'error_code': 'INVALID_BORDERLINE', 'error_msg': f'Invalid borderline: {bl}'}
 
-    return row, None
+    return cells, None

@@ -117,6 +117,7 @@ def discover_columns(db_path):
     return input_cols, result_data_cols, results_all_cols, results_types
 
 input_cols, result_data_cols, results_all_cols, results_types = discover_columns(db)
+result_col_idx = {col: i for i, col in enumerate(result_data_cols)}
 results_insert_sql = f"INSERT INTO results ({', '.join(results_all_cols)}) VALUES ({', '.join('?' for _ in results_all_cols)})"
 
 # === API setup ===
