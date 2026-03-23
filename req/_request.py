@@ -257,6 +257,37 @@ def model_specific_instructions(model):
 {model['special']}
 """
 
+def store_parse_result(conn, req_id, run_id, parsed_result):
+    """Insert parsed rows into results table and errors into errors table.
+    Returns set of UIDs that failed due to constraint violations."""
+    insert_errors = []
+    for row in parsed_result.rows:
+        values = tuple(
+            row.get(c, run_id if c == 'run_id' else req_id if c == 'req_id' else '')
+            for c in results_all_cols
+        )
+        try:
+            conn.execute(results_insert_sql, values)
+        except sqlite3.IntegrityError as e:
+            insert_errors.append({
+                'uid': row['uid'],
+                'error_code': 'CONSTRAINT_VIOLATION',
+                'error_msg': str(e),
+                'orig_line': row.get('orig_line'),
+            })
+    constraint_failed = set(e['uid'] for e in insert_errors)
+    conn.executemany("delete from results where req_id = ? and uid = ?",
+                     ((req_id, uid) for uid in constraint_failed))
+
+    conn.executemany(
+        """INSERT INTO errors (req_id, uid, error_code, error_msg, orig_line)
+            VALUES (?, ?, ?, ?, ?)""",
+        ((req_id, err['uid'], err['error_code'], err['error_msg'], err['orig_line'])
+         for err in [*parsed_result.errors, *insert_errors])
+    )
+    return constraint_failed
+
+
 def send_request(run, model_alias, seq_id, uids):
     if not uids:
         return RequestResult()
@@ -423,32 +454,7 @@ def send_request(run, model_alias, seq_id, uids):
                     (req_id, json.dumps(payload), json.dumps(data))
                 )
 
-                # Insert results row-by-row to catch constraint violations
-                insert_errors = []
-                for row in parsed_result.rows:
-                    values = tuple(
-                        row.get(c, run.run_id if c == 'run_id' else req_id if c == 'req_id' else '')
-                        for c in results_all_cols
-                    )
-                    try:
-                        conn.execute(results_insert_sql, values)
-                    except sqlite3.IntegrityError as e:
-                        insert_errors.append({
-                            'uid': row['uid'],
-                            'error_code': 'CONSTRAINT_VIOLATION',
-                            'error_msg': str(e),
-                            'orig_line': row.get('orig_line'),
-                        })
-                constraint_failed = set(e['uid'] for e in insert_errors)
-                conn.executemany("delete from results where req_id = ? and uid = ?",
-                                 ((req_id, uid) for uid in constraint_failed))
-
-                conn.executemany(
-                    """INSERT INTO errors (req_id, uid, error_code, error_msg, orig_line)
-                        VALUES (?, ?, ?, ?, ?)""",
-                    ((req_id, err['uid'], err['error_code'], err['error_msg'], err['orig_line'])
-                     for err in [*parsed_result.errors, *insert_errors])
-                )
+                constraint_failed = store_parse_result(conn, req_id, run.run_id, parsed_result)
 
                 conn.commit()
                 break  # Success, exit the retry loop
