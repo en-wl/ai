@@ -41,6 +41,32 @@ class ParseResult:
     model_notes: str = None
     errors: list = field(default_factory=list)
 
+class Row(tuple):
+    _fields = ()
+    _expected = 0
+    _idx = {}
+
+    def __new__(cls, cells):
+        return super().__new__(cls, cells)
+
+    def __getattr__(self, name):
+        try:
+            return self[self._idx[name]]
+        except KeyError:
+            raise AttributeError(f"Row has no field '{name}'")
+
+    def _asdict(self):
+        return {f: self[i] for i, f in enumerate(self._fields) if i < len(self)}
+
+    def _replace(self, **kwargs):
+        items = list(self)
+        for k, v in kwargs.items():
+            items[self._idx[k]] = v
+        return type(self)(items)
+
+Row._fields = tuple(result_data_cols)
+Row._expected = len(result_data_cols)
+Row._idx = result_col_idx
 
 def process_llm_response(content, expected_uids, input_data):
     lines = content.splitlines()
@@ -88,7 +114,7 @@ def process_llm_response(content, expected_uids, input_data):
 
             # 3. Process Data Row
             # We parse the row if we are in_table (and it wasn't a separator or header)
-            cells = [c.strip() for c in line.split('|')[1:-1]]
+            cells = Row(c.strip() for c in line.split('|')[1:-1])
 
             # Attempt to extract UID first
             uid = None
@@ -129,17 +155,17 @@ def process_llm_response(content, expected_uids, input_data):
                     continue
 
             # Check for malformed row
-            if len(cells) != len(result_data_cols):
+            if len(cells) != Row._expected:
                 errors.append({
                     'uid': uid,
                     'error_code': "MALFORMED_ROW",
-                    'error_msg': f"Malformed row ({len(cells)} cols, expected {len(result_data_cols)})",
+                    'error_msg': f"Malformed row ({len(cells)} cols, expected {Row._expected})",
                     'orig_line': line
                 })
                 continue
 
             # Map cells to column names
-            row = dict(zip(result_data_cols, cells))
+            row = cells._asdict()
             row['uid'] = uid  # ensure uid is int
 
             # Post-validation type fixes
