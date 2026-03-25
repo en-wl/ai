@@ -337,6 +337,8 @@ if __name__ == '__main__':
             if not cont:
                 break
             cont = main(max_workers, batch_size)
+            if ENABLE_REDO:
+                cont = False
 
         logging.info(f"END: {model_alias}: {STATE_NAMES[exit_code]}; skipped {len(bad_uids)} UIDs")
         sys.exit(exit_code)
