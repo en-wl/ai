@@ -162,7 +162,10 @@ def main(max_workers, batch_size):
         if hit_429 and record_rate_limit():
             old = effective_max_workers
             effective_max_workers = max(1, min(len(in_flight), old-1))
-            logging.warning(f"*** RATE LIMITED: max_workers capped {old} -> {effective_max_workers} ***")
+            if effective_max_workers < old:
+                logging.warning(f"*** RATE LIMITED: max_workers capped {old} -> {effective_max_workers} ***")
+            elif effective_max_workers == 1:
+                consecutive_errors += 1
             run.push(*redo)
             return
 
