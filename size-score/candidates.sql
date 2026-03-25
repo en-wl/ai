@@ -6,7 +6,7 @@ create view candidates as
              group by model,uid),
        mass as (select model, uid, max(lower+higher) as outside from model_size_scores group by model,uid)
 select * from cnt left join mass using (model, uid)
- where (model in ('gpt-5.2', 'gpt-5.3-chat', 'qwen3.5-397b-a17b') and ((num_runs < 5 and outside > 0.2) or (num_runs < 3)))
+ where (model in ('gpt-5.2', 'gpt-5.3-chat', 'gpt-5.4-nano', 'qwen3.5-397b-a17b') and ((num_runs < 5 and outside > 0.2) or (num_runs < 3)))
     or (model = 'gemini-2.5-flash' and num_runs < 2)
     or (model in ('deepseek-v3.2','gpt-oss-120b','qwen3-235b-a22b','llama-4-maverick') and ((num_runs < 12 and outside > 0.2) or (num_runs < 8 and outside > 0) or (num_runs < 5)))
 ;

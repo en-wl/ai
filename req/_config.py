@@ -37,6 +37,11 @@ models_config = {
         "providers": ["openai"],
         "batch_size": 200,
     },
+    "gpt-5.4-nano": {
+        "name": "openai/gpt-5.4-nano",
+        "providers": ["openai"],
+        "batch_size": 200,
+    },
     "gpt-oss-120b": {
         "name": "openai/gpt-oss-120b",
         "providers": ["deepinfra/turbo"], # deepinfra/bf16  ["crusoe/bf16"],
