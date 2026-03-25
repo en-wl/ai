@@ -5,6 +5,10 @@ drop view if exists results_w_model;
 create view results_w_model as
 select model,r.* from results as r join runs using (run_id);
 
+drop view if exists errors_w_model;
+create view errors_w_model as
+select model, e.* from errors as e join requests using (req_id) join runs using (run_id);
+
 drop view if exists request_cost;
 create view request_cost as
 select req_id, entry_time, send_time,
@@ -37,3 +41,4 @@ create view runs_w_cost as
 select r.*, round(usage_cost,4) as usage_cost, round(uid_cost,6) as uid_cost
   from runs as r join run_cost using (run_id);
 select * from runs_w_cost limit 0;
+
