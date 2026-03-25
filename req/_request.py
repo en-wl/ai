@@ -49,6 +49,10 @@ class Row(tuple):
     def __new__(cls, cells):
         return super().__new__(cls, cells)
 
+    @classmethod
+    def _make(cls, cells):
+        return super().__new__(cls, cells)
+
     def __getattr__(self, name):
         try:
             return self[self._idx[name]]
@@ -80,6 +84,7 @@ def process_llm_response(content, expected_uids, input_data):
 
     # Regex to define a table row (starts and ends with |)
     row_pattern = re.compile(r'^\s*\|.*\|\s*$')
+    seen = set() # duplicate input detection
 
     for line in lines:
 
@@ -115,51 +120,55 @@ def process_llm_response(content, expected_uids, input_data):
             # 3. Process Data Row
             # We parse the row if we are in_table (and it wasn't a separator or header)
             cells = Row(c.strip() for c in line.split('|')[1:-1])
+            if cells in seen:
+                continue # skip duplicate lines
+            seen.add(cells)
 
             # Attempt to extract UID first
-            uid = None
-            if len(cells) > 0:
-                uid_str = cells[0]
-                try:
-                    uid = int(uid_str)
-                except ValueError:
-                    errors.append({
-                        'uid': None,
-                        'error_code': "INVALID_UID",
-                        'error_msg': f"Invalid UID str: {uid_str}",
-                        'orig_line': line
-                    })
-                    continue
-                if uid not in expected_uids:
-                    errors.append({
-                        'uid': None,
-                        'error_code': "UID_UNKNOWN",
-                        'error_msg': f"UID {uid} returned but not requested.",
-                        'orig_line': line,
-                    })
-                    continue
+            try:
+                uid = int(cells[0])
+            except ValueError:
+                errors.append({
+                    'uid': None,
+                    'error_code': "INVALID_UID",
+                    'error_msg': f"Invalid UID str: {cells[0]}",
+                    'orig_line': line
+                })
+                continue
+            if uid not in expected_uids:
+                errors.append({
+                    'uid': None,
+                    'error_code': "UID_UNKNOWN",
+                    'error_msg': f"UID {uid} returned but not requested.",
+                    'orig_line': line,
+                })
+                continue
 
-            # validate_row callback (before column-count check so it can fix cells)
+            # Validate_row callback, called now to give it a chance to fix malformed rows;
+            # store error for later
+            validation_err = None
             if validate_row is not None:
                 try:
-                    cells, err = validate_row(cells, input_data[uid])
+                    cells, validation_err = validate_row(cells, input_data[uid])
                 except IndexError:
-                    err = None  # fall through to MALFORMED_ROW check
-                if err is not None:
-                    errors.append({
-                        'uid': uid,
-                        'error_code': err['error_code'],
-                        'error_msg': err['error_msg'],
-                        'orig_line': line
-                    })
-                    continue
+                    pass # fall through to MALFORMED_ROW check
 
             # Check for malformed row
-            if len(cells) != Row._expected:
+            if len(cells) != cells._expected:
                 errors.append({
                     'uid': uid,
                     'error_code': "MALFORMED_ROW",
                     'error_msg': f"Malformed row ({len(cells)} cols, expected {Row._expected})",
+                    'orig_line': line
+                })
+                continue
+
+            # The row is valid, report any errors from validation
+            if validation_err is not None:
+                errors.append({
+                    'uid': uid,
+                    'error_code': validation_err['error_code'],
+                    'error_msg': validation_err['error_msg'],
                     'orig_line': line
                 })
                 continue
