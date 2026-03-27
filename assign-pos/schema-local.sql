@@ -15,3 +15,23 @@ create table if not exists results (
   notes text not null,
   primary key (uid, pos, pos_class, req_id)
 ) without rowid;
+
+create table if not exists combined_w_model (
+  uid integer not null,
+  model text not null,
+  cnt integer not null,
+  total integer not null,
+  lemma text,
+  pos text,
+  pos_class text
+);
+
+create table if not exists combined (
+  uid integer not null,
+  cnt integer not null,
+  cnt_w real not null,
+  total integer not null,
+  lemma text,
+  pos text,
+  pos_class text
+);

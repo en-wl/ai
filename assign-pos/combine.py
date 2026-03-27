@@ -202,6 +202,7 @@ def main():
     conn.row_factory = sqlite3.Row
     conn.execute("begin immediate")
 
+    conn.execute("delete from completed_reqs")
     conn.execute("drop table if exists combined_w_model")
     conn.execute("""
         create table combined_w_model (

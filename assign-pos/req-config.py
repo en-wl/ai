@@ -3,8 +3,8 @@ from pathlib import Path
 import os
 
 mode = os.getenv('REQ_MODE')
-if mode not in ('INIT', 'REDO'):
-    raise ValueError('REQ_MODE env var must be defined and one of INIT REDO')
+if mode not in ('INIT', 'REDO', 'DYNAMIC'):
+    raise ValueError('REQ_MODE env var must be defined and one of INIT REDO DYNAMIC')
 
 x_title = 'POS Assignment'
 key_file = '/home/kevina/wordlist/keys/openrouter.txt'
@@ -47,12 +47,42 @@ ENABLE_REDO = True if mode == 'INIT' else False
 
 if mode == 'INIT':
     input_rows_sql = 'select * from input'
-else:
+    def input_rows(conn, model):
+        return conn.execute(input_rows_sql)
+elif mode == 'REDO':
     input_rows_sql = Path("candidates.sql.in").read_text()
     post_run = ['python3', 'combine.py']
+    def input_rows(conn, model):
+        return conn.execute(input_rows_sql, {'model': model})
+else:  # DYNAMIC
+    DYNAMIC_MODE = True
 
-def input_rows(conn, model):
-    return conn.execute(input_rows_sql, {'model': model})
+    _candidates_sql = Path("candidates-dynamic.sql.in").read_text()
+
+    def create_candidates_temp_table(conn, model, run_id):
+        conn.execute(_candidates_sql, {'model': model})
+
+    def on_request_complete():
+        import sqlite3 as _sqlite3
+        from combine import update_uid
+        with _sqlite3.connect(db) as conn:
+            conn.row_factory = _sqlite3.Row
+            uids = conn.execute('SELECT DISTINCT uid FROM completed_reqs').fetchall()
+            if not uids:
+                return
+            inputs = {r['uid']: dict(r) for r in
+                      conn.execute('SELECT * FROM input WHERE uid IN '
+                                   '(SELECT DISTINCT uid FROM completed_reqs)')}
+            for r in uids:
+                uid = r['uid']
+                conn.execute('DELETE FROM combined_w_model WHERE uid = ?', (uid,))
+                conn.execute('DELETE FROM combined WHERE uid = ?', (uid,))
+                update_uid(conn, uid, inputs[uid])
+            conn.execute('DELETE FROM completed_reqs')
+            conn.commit()
+
+    def input_rows(conn, model):
+        return conn.execute('SELECT * FROM input')
 
 def validate_row(row, input_row):
     # Try and fix malformed rows

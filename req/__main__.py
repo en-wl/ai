@@ -17,8 +17,13 @@ exit_code = 0
 bad_uids = set()
 class BatchSession:
     def __init__(self, model_alias, batch_size):
+        if DYNAMIC_MODE and ENABLE_REDO:
+            raise RuntimeError("ENABLE_REDO is not supported in DYNAMIC mode")
+
         self.input_strings = {}
         self.input_data = {}
+        self.dynamic = DYNAMIC_MODE
+        self.model_alias = model_alias
 
         self.header = '|'.join(input_cols)
         with sqlite3.connect(db) as conn:
@@ -29,9 +34,13 @@ class BatchSession:
                 self.input_data[uid] = dict(zip(input_cols, row))
 
         self.batch_size = batch_size
-        self._uids_todo = []
-        self.push(*self.input_strings.keys())
-        self.shuffle()
+
+        if self.dynamic:
+            self._est_remaining = batch_size # placeholder until first next()
+        else:
+            self._uids_todo = []
+            self.push(*self.input_strings.keys())
+            self.shuffle()
 
         model_config = models_config[model_alias]
         temperature = model_config.get('temperature', 1) if temp_override is None else temp_override
@@ -46,11 +55,17 @@ class BatchSession:
             self.run_id = cur.lastrowid
             conn.commit()
 
-    def todo_size(self):
+    @property
+    def remaining(self):
+        if self.dynamic:
+            return self._est_remaining
         return len(self._uids_todo)
 
-    def clear_todo(self):
-        self._uids_todo.clear()
+    def drain(self):
+        if self.dynamic:
+            self._est_remaining = 0
+        else:
+            self._uids_todo.clear()
 
     def push(self, *uids):
         for uid in uids:
@@ -61,12 +76,58 @@ class BatchSession:
     def shuffle(self):
         random.shuffle(self._uids_todo)
 
-    def next(self):
+    def next(self, seq_id=None):
+        if self.dynamic:
+            return self._next_dynamic(seq_id)
         self.num_batches = ceil(len(self._uids_todo) / self.batch_size)
         size = floor(len(self._uids_todo) / self.num_batches) if self.num_batches > 0 else 0
         uids = self._uids_todo[-size:]
         del self._uids_todo[-size:]
         return uids
+
+    def _next_dynamic(self, seq_id):
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute('PRAGMA temp_store = MEMORY')
+            conn.isolation_level = None  # autocommit; we manage transactions explicitly
+            conn.execute('BEGIN IMMEDIATE')
+            create_candidates_temp_table(conn, self.model_alias, self.run_id)
+            conn.execute('''
+                CREATE TEMP TABLE _candidates_w_outstanding AS
+                SELECT c.uid, c.word, c.pos,
+                       c.reqs_cnt + coalesce(o.cnt, 0) AS reqs_cnt,
+                       c.num - coalesce(o.cnt, 0) AS num
+                  FROM _candidates c
+                  LEFT JOIN (SELECT uid, count(*) AS cnt
+                               FROM outstanding_reqs WHERE model = ?
+                               GROUP BY uid) o USING (uid)
+                  WHERE c.num - coalesce(o.cnt, 0) > 0
+                    AND c.uid NOT IN (SELECT uid FROM skipped_uids WHERE run_id = ?)
+                ''', (self.model_alias, self.run_id))
+            rows = conn.execute('''
+                SELECT uid, word, pos FROM _candidates_w_outstanding
+                ORDER BY reqs_cnt, num DESC, random()
+                LIMIT ?''', (self.batch_size,)).fetchall()
+            self._est_remaining = conn.execute(
+                'SELECT sum(num) FROM _candidates_w_outstanding'
+            ).fetchone()[0] or 0
+            uids = [r[0] for r in rows]
+            now = time.time()
+            conn.executemany(
+                'INSERT INTO outstanding_reqs VALUES (?,?,?,?,?)',
+                [(uid, self.model_alias, self.run_id, seq_id, now)
+                 for uid in uids])
+            conn.execute('COMMIT')
+        except Exception:
+            conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return uids
+
+    def progress_str(self, seq_id):
+        remaining_runs = ceil(self.remaining / self.batch_size)
+        return f"#{seq_id}/~{seq_id - 1 + remaining_runs}"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -123,12 +184,16 @@ consecutive_errors = 0
 model_alias = None
 def main(max_workers, batch_size):
     run = BatchSession(model_alias, batch_size)
-    if not run.todo_size():
+    if not run.remaining:
         return False
-    logging.info(f"STARTING RUN {run.run_id}/{model_alias}; UIDs: {run.todo_size()}")
+    if run.dynamic:
+        est_runs = ceil(run.remaining / batch_size)
+        logging.info(f"STARTING RUN {run.run_id}/{model_alias}; ~{est_runs} runs")
+    else:
+        logging.info(f"STARTING RUN {run.run_id}/{model_alias}; UIDs: {run.remaining}")
 
     in_flight = set()
-    seq_id = 0
+    seq_id = 1
     effective_max_workers = max_workers
 
     LAST_LOG_INTERVAL = 20
@@ -143,18 +208,24 @@ def main(max_workers, batch_size):
         logging.warning(f"*** ENTERING SHUTDOWN MODE: {reason} ***")
         shutdown_str = f"{prefix}: "
         # cause the loop to exit cleanly after draining in-flight
-        run.clear_todo()
+        run.drain()
         last_log_time = None
 
     def handle_result(future):
         global consecutive_errors
         nonlocal effective_max_workers, last_log_time
         try:
-            failed, redo, completed, hit_429, error_class = future.result()
+            result = future.result()
         except Exception as e:
             logging.exception(f"ERROR: {e}")
             enter_shutdown_mode("failure mode")
             return
+
+        failed = result.failed
+        redo = result.redo
+        completed = result.completed
+        hit_429 = result.hit_429
+        error_class = result.error_class
 
         if shutdown_str:
             return
@@ -166,7 +237,8 @@ def main(max_workers, batch_size):
                 logging.warning(f"*** RATE LIMITED: max_workers capped {old} -> {effective_max_workers} ***")
             elif effective_max_workers == 1:
                 consecutive_errors += 1
-            run.push(*redo)
+            if not run.dynamic:
+                run.push(*redo)
             return
 
         # Consecutive systematic/connection error tracking
@@ -196,9 +268,20 @@ def main(max_workers, batch_size):
             # reset consecutive_errors as the errors may of been due to specific UIDS.
             consecutive_errors = 0
 
-        # Requeue
-        if ENABLE_REDO:
+            if run.dynamic:
+                with sqlite3.connect(db) as conn:
+                    conn.executemany(
+                        'INSERT OR IGNORE INTO skipped_uids VALUES (?,?)',
+                        [(uid, run.run_id) for uid in new_bad_uids])
+                    conn.commit()
+
+        if ENABLE_REDO:  # guaranteed not dynamic (checked in __init__)
             run.push(*redo)
+
+        # Incremental combine (dynamic mode)
+        if run.dynamic:
+            if on_request_complete is not None:
+                on_request_complete()
 
         last_log_time = None
 
@@ -206,7 +289,7 @@ def main(max_workers, batch_size):
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Main loop: continue while requests are in flight OR there's work to do
-        while in_flight or run.todo_size():
+        while in_flight or run.remaining:
             loop_start = time.time()
 
             if len(in_flight) >= effective_max_workers:
@@ -230,11 +313,15 @@ def main(max_workers, batch_size):
 
             # Submit new work if:
             #   - there's work to do, AND
-            #   - redo is disabled (submit any size batch), OR
+            #   - redo is disabled and not dynamic (submit any size batch), OR
             #   - we have a full batch worth of work, OR
             #   - nothing in flight (submit final partial batch)
-            if run.todo_size() and (not ENABLE_REDO or run.todo_size() >= batch_size or not in_flight):
-                uids = run.next()
+            if run.remaining and (not ENABLE_REDO and not run.dynamic
+                                 or run.remaining >= batch_size
+                                 or not in_flight):
+                uids = run.next(seq_id)
+                if not uids:
+                    continue  # dynamic mode: no candidates left
                 f = executor.submit(send_request, run, model_alias, seq_id, list(uids))
                 seq_id += 1
                 in_flight.add(f)
@@ -330,15 +417,19 @@ if __name__ == '__main__':
         logging.info(f"BEGIN: {model_alias}: max_workers={max_workers}; batch_size={batch_size}")
         time.sleep(2)
 
-        cont = True
-        while True:
-            if post_run is not None:
-                subprocess.run(post_run, check=True)
-            if not cont:
-                break
-            cont = main(max_workers, batch_size)
-            if ENABLE_REDO:
-                cont = False
+        if DYNAMIC_MODE:
+            main(max_workers, batch_size)
+
+        else:
+            cont = True
+            while True:
+                if post_run is not None:
+                    subprocess.run(post_run, check=True)
+                if not cont:
+                    break
+                cont = main(max_workers, batch_size)
+                if ENABLE_REDO:
+                    cont = False
 
         logging.info(f"END: {model_alias}: {STATE_NAMES[exit_code]}; skipped {len(bad_uids)} UIDs")
         sys.exit(exit_code)

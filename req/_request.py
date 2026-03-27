@@ -325,7 +325,7 @@ def send_request(run, model_alias, seq_id, uids):
     if not uids:
         return RequestResult()
 
-    logging.info(f"starting {run.run_id}/{model_alias} #{seq_id+1}/{seq_id+run.num_batches}; UIDs: {len(uids)}")
+    logging.info(f"starting {run.run_id}/{model_alias} {run.progress_str(seq_id)}; UIDs: {len(uids)}")
 
     model = models_config[model_alias]
     model_id = model['name']
@@ -438,7 +438,7 @@ def send_request(run, model_alias, seq_id, uids):
                 raise requests.exceptions.Timeout(f"No data received for {timeout}s")
 
             if abort_event.is_set():
-                logging.info(f"aborting: {run.run_id}/{model_alias} #{seq_id+1}")
+                logging.info(f"aborting: {run.run_id}/{model_alias} #{seq_id}")
                 break
 
     except requests.HTTPError as e:
@@ -448,7 +448,7 @@ def send_request(run, model_alias, seq_id, uids):
         else:
             resp = e.response
             if resp.status_code == 429:
-                logging.info(f"rate limited (429): {run.run_id}/{model_alias} #{seq_id+1}.")
+                logging.info(f"rate limited (429): {run.run_id}/{model_alias} #{seq_id}.")
                 return RequestResult(redo=set(uids), hit_429=True)
             data = {"error": error_msg,
                     "status_code": resp.status_code,
@@ -489,12 +489,21 @@ def send_request(run, model_alias, seq_id, uids):
 
                 constraint_failed = store_parse_result(conn, req_id, run.run_id, parsed_result)
 
+                if DYNAMIC_MODE:
+                    conn.execute(
+                        'DELETE FROM outstanding_reqs WHERE run_id = ? AND seq_id = ?',
+                        (run.run_id, seq_id))
+                    completed_for_db = set(row['uid'] for row in parsed_result.rows) - constraint_failed
+                    conn.executemany(
+                        'INSERT INTO completed_reqs (uid, model) VALUES (?, ?)',
+                        [(uid, model_alias) for uid in completed_for_db])
+
                 conn.commit()
                 break  # Success, exit the retry loop
         except sqlite3.OperationalError as e:
             if "locked" not in str(e):
                 raise
-            logging.info(f"SQLite locked for {model_alias} #{seq_id+1}: {e}. Retrying in 1 second...")
+            logging.info(f"SQLite locked for {model_alias} #{seq_id}: {e}. Retrying in 1 second...")
             time.sleep(1)
             continue
 
@@ -519,5 +528,5 @@ def send_request(run, model_alias, seq_id, uids):
     ok_cnt = len(completed)
     failed_cnt = len(failed)
     missing_cnt = len(redo - failed)
-    logging.info(f"{prefix}: {run.run_id}/{model_alias} #{seq_id+1}; id: {req_id}; ok/err/…: {ok_cnt}/{failed_cnt}/{missing_cnt}")
+    logging.info(f"{prefix}: {run.run_id}/{model_alias} #{seq_id}; id: {req_id}; ok/err/…: {ok_cnt}/{failed_cnt}/{missing_cnt}")
     return RequestResult(failed=failed, redo=redo, completed=completed, error_class=error_class)

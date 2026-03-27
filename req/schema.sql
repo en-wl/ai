@@ -36,4 +36,21 @@ create table if not exists raw_data (
   response text
 );
 
+create table if not exists outstanding_reqs (
+  uid integer not null,
+  model text not null,
+  run_id integer not null,
+  seq_id integer not null,
+  timestamp real not null    -- shared across all entries for (run_id, seq_id)
+);
 
+create table if not exists completed_reqs (
+  uid integer not null,
+  model text not null
+);
+
+create table if not exists skipped_uids (
+  uid integer not null,
+  run_id integer not null,
+  primary key (uid, run_id)
+) without rowid;
