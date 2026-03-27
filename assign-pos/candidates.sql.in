@@ -1,0 +1,23 @@
+with
+  req_cnts as (
+    select uid, count(distinct req_id) as reqs_cnt
+      from results_w_model where model = :model group by uid),
+  cnts as (
+    select input.*, coalesce(reqs_cnt, 0) as reqs_cnt
+      from input left join req_cnts using (uid)),
+  needed as (
+    select *,
+           case when :model = 'qwen3-235b-a22b' and reqs_cnt < 3
+                then 3-reqs_cnt
+                when reqs_cnt == 0
+                then 1
+                when reqs_cnt < 5
+                 and uid in (select uid from combined_w_model where cnt != total and model = :model group by uid)
+                then 5-reqs_cnt
+                when reqs_cnt < 3
+                 and uid in (select uid from combined where cnt != total)
+                then 3-reqs_cnt
+                else 0 end as num
+      from cnts)
+select uid, word, pos
+from needed where num > 0;

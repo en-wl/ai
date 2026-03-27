@@ -455,7 +455,7 @@ def send_request(run, model_alias, seq_id, uids):
                     "reason": resp.reason,
                     "body": resp.text}
     except (requests.exceptions.Timeout, urllib3.exceptions.TimeoutError) as e:
-        error_msg = str(e)
+        error_msg = f"{type(e).__name__}: {e}"
         data['error'] = error_msg
     except Exception as e:
         logging.exception(e)

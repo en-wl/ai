@@ -56,6 +56,12 @@ models_config = {
         "stop": "<<<END>>>",
         "special": "After the Notes section, output the exact text `<<<END>>>` on its own line, then stop.",
     },
+    "grok-4.1-fast": {
+        "name": "x-ai/grok-4.1-fast",
+        "providers": ["xai"],
+        "reasoning": "low",
+        "batch_size": 200,
+    },
     "deepseek-v3.2": {
         "name": "deepseek/deepseek-v3.2",
         "providers": ["novita/fp8","siliconflow/fp8","atlas-cloud/fp8"],
@@ -69,7 +75,7 @@ models_config = {
     # },
     "llama-4-maverick": {
         "name": "meta-llama/llama-4-maverick",
-        "providers": ["deepinfra/base"],
+        "providers": ["deepinfra/base", "parasail/fp8"],
         "batch_size": 100,
     },
     "qwen3-235b-a22b": {
@@ -91,13 +97,13 @@ models_config = {
         "presence_penalty" : 1.5,
         "top_k": 20,
     },
-    "qwen3-235b-a22b-thinking": {
-        "name": "qwen/qwen3-235b-a22b-thinking-2507",
-        "providers": ["deepinfra/fp8", "novita/fp8", "atlas-cloud/fp8"],
-        "reasoning": "minimal",
-        "batch_size": 35,
-        "max_output": 32000,
-    }
+    # "qwen3-235b-a22b-thinking": {
+    #     "name": "qwen/qwen3-235b-a22b-thinking-2507",
+    #     "providers": ["deepinfra/fp8", "novita/fp8", "atlas-cloud/fp8"],
+    #     "reasoning": "minimal",
+    #     "batch_size": 35,
+    #     "max_output": 32000,
+    # }
 }
 
 # === Load config ===

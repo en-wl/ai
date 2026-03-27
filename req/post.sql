@@ -14,7 +14,7 @@ create view request_cost as
 select req_id, entry_time, send_time,
        entry_time - send_time as elapsed_secs,
        run_id,
-       batch_size as input_rows,
+       batch_size as input_uids,
        error is null as success,
        json_extract(response, '$.usage.cost') as usage_cost
 from raw_data
@@ -23,22 +23,39 @@ select * from request_cost limit 0;
 
 drop view if exists uid_cost;
 create view uid_cost as
-select rc.*, output_rows, usage_cost/output_rows as uid_cost
+select rc.*, output_uids,
+       usage_cost/output_uids as uid_cost
   from request_cost as rc
-  left join (select req_id, count(distinct uid) as output_rows
-               from results group by req_id) as q using (req_id);
+  left join (select req_id, count(distinct uid) as output_uids
+               from results group by req_id) as q on rc.req_id = q.req_id and rc.usage_cost is not null;
 select * from uid_cost limit 0;
 
 drop view if exists run_cost;
 create view run_cost as
-select run_id, sum(usage_cost) as usage_cost, sum(usage_cost) / sum(output_rows) as uid_cost
+select run_id,
+       count(distinct req_id) filter (where usage_cost is not null) as cnt_requests,
+       count(distinct req_id) as num_requests,
+       sum(output_uids) as cnt_uids,
+       sum(usage_cost) as usage_cost,
+       sum(usage_cost) / sum(output_uids) as uid_cost
 from uid_cost
-group by run_id;
+group by run_id
+--having count(*) filter (where usage_cost is null) == 0
+;
 select * from run_cost limit 0;
 
 drop view if exists runs_w_cost;
 create view runs_w_cost as
-select r.*, round(usage_cost,4) as usage_cost, round(uid_cost,6) as uid_cost
-  from runs as r join run_cost using (run_id);
+select r.*, cnt_requests, num_requests, cnt_uids, round(usage_cost,6) as usage_cost, round(uid_cost,8) as uid_cost
+  from runs as r
+  left join run_cost using (run_id);
 select * from runs_w_cost limit 0;
 
+drop view if exists model_costs;
+create view model_costs as
+select model, sum(usage_cost) as total_cost, sum(output_uids) as uids, sum(usage_cost)/sum(output_uids) as uid_cost
+  from uid_cost
+  join runs using (run_id)
+group by model
+order by uid_cost;
+select * from model_costs limit 0;
