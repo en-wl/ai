@@ -51,7 +51,6 @@ if mode == 'INIT':
         return conn.execute(input_rows_sql)
 elif mode == 'REDO':
     input_rows_sql = Path("candidates.sql.in").read_text()
-    post_run = ['python3', 'combine.py']
     def input_rows(conn, model):
         return conn.execute(input_rows_sql, {'model': model})
 else:  # DYNAMIC
