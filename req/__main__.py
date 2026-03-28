@@ -1,4 +1,3 @@
-import sqlite3
 import random
 from math import ceil,floor
 import os
@@ -26,7 +25,7 @@ class BatchSession:
         self.model_alias = model_alias
 
         self.header = '|'.join(input_cols)
-        with sqlite3.connect(db) as conn:
+        with open_db('r') as conn:
             for row in input_rows(conn, model_alias):
                 uid = row[0]
                 values = [str(col) for col in row]
@@ -36,7 +35,7 @@ class BatchSession:
         self.batch_size = batch_size
 
         if self.dynamic:
-            self._est_remaining = batch_size # placeholder until first next()
+            self._est_remaining = batch_size
         else:
             self._uids_todo = []
             self.push(*self.input_strings.keys())
@@ -46,26 +45,19 @@ class BatchSession:
         temperature = model_config.get('temperature', 1) if temp_override is None else temp_override
         reasoning = model_config.get('reasoning', 'n/a')
 
-        with sqlite3.connect(db) as conn:
+        with open_db('w') as conn:
             cur = conn.execute(
                 """INSERT INTO runs (model, start_time, batch_size, temperature, reasoning_effort, sample_type)
                    VALUES (?, (julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, 'random')""",
                 (model_alias, self.batch_size, temperature, reasoning)
             )
             self.run_id = cur.lastrowid
-            conn.commit()
 
     @property
     def remaining(self):
         if self.dynamic:
             return self._est_remaining
         return len(self._uids_todo)
-
-    def drain(self):
-        if self.dynamic:
-            self._est_remaining = 0
-        else:
-            self._uids_todo.clear()
 
     def push(self, *uids):
         for uid in uids:
@@ -76,21 +68,22 @@ class BatchSession:
     def shuffle(self):
         random.shuffle(self._uids_todo)
 
-    def next(self, seq_id=None):
+    def _local_batch_size(self):
+        num_batches = ceil(self.remaining / self.batch_size)
+        return floor(self.remaining / num_batches) if num_batches > 0 else 0
+
+    def next(self, seq_id, threshold = -1):
         if self.dynamic:
-            return self._next_dynamic(seq_id)
-        self.num_batches = ceil(len(self._uids_todo) / self.batch_size)
-        size = floor(len(self._uids_todo) / self.num_batches) if self.num_batches > 0 else 0
+            return self._next_dynamic(seq_id, threshold)
+        if self.remaining < threshold:
+            return None
+        size = self._local_batch_size()
         uids = self._uids_todo[-size:]
         del self._uids_todo[-size:]
         return uids
 
-    def _next_dynamic(self, seq_id):
-        conn = sqlite3.connect(db)
-        try:
-            conn.execute('PRAGMA temp_store = MEMORY')
-            conn.isolation_level = None  # autocommit; we manage transactions explicitly
-            conn.execute('BEGIN IMMEDIATE')
+    def _next_dynamic(self, seq_id, threshold):
+        with open_db('w') as conn:
             create_candidates_temp_table(conn, self.model_alias, self.run_id)
             conn.execute('''
                 CREATE TEMP TABLE _candidates_w_outstanding AS
@@ -104,30 +97,20 @@ class BatchSession:
                   WHERE c.num - coalesce(o.cnt, 0) > 0
                     AND c.uid NOT IN (SELECT uid FROM skipped_uids WHERE run_id = ?)
                 ''', (self.model_alias, self.run_id))
-            rows = conn.execute('''
-                SELECT uid, word, pos FROM _candidates_w_outstanding
-                ORDER BY reqs_cnt, num DESC, random()
-                LIMIT ?''', (self.batch_size,)).fetchall()
-            self._est_remaining = conn.execute(
-                'SELECT sum(num) FROM _candidates_w_outstanding'
-            ).fetchone()[0] or 0
-            uids = [r[0] for r in rows]
+            self._est_remaining = conn.execute('SELECT sum(num) FROM _candidates_w_outstanding').fetchone()[0] or 0
+            if self._est_remaining < threshold:
+                return None
+            uids = [r[0] for r in conn.execute('SELECT uid FROM _candidates_w_outstanding ORDER BY reqs_cnt, num DESC, random() LIMIT ?',
+                                               (self._local_batch_size(),))]
             now = time.time()
-            conn.executemany(
-                'INSERT INTO outstanding_reqs VALUES (?,?,?,?,?)',
-                [(uid, self.model_alias, self.run_id, seq_id, now)
-                 for uid in uids])
-            conn.execute('COMMIT')
-        except Exception:
-            conn.execute('ROLLBACK')
-            raise
-        finally:
-            conn.close()
+            conn.executemany('INSERT INTO outstanding_reqs VALUES (?,?,?,?,?)',
+                             ((uid, self.model_alias, self.run_id, seq_id, now) for uid in uids))
+            self._est_remaining -= len(uids)
         return uids
 
     def progress_str(self, seq_id):
         remaining_runs = ceil(self.remaining / self.batch_size)
-        return f"#{seq_id}/~{seq_id - 1 + remaining_runs}"
+        return f"#{seq_id}/~{seq_id + remaining_runs}"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -187,8 +170,7 @@ def main(max_workers, batch_size):
     if not run.remaining:
         return False
     if run.dynamic:
-        est_runs = ceil(run.remaining / batch_size)
-        logging.info(f"STARTING RUN {run.run_id}/{model_alias}; ~{est_runs} runs")
+        logging.info(f"STARTING RUN {run.run_id}/{model_alias}")
     else:
         logging.info(f"STARTING RUN {run.run_id}/{model_alias}; UIDs: {run.remaining}")
 
@@ -207,8 +189,6 @@ def main(max_workers, batch_size):
             prefix = reason
         logging.warning(f"*** ENTERING SHUTDOWN MODE: {reason} ***")
         shutdown_str = f"{prefix}: "
-        # cause the loop to exit cleanly after draining in-flight
-        run.drain()
         last_log_time = None
 
     def handle_result(future):
@@ -269,11 +249,10 @@ def main(max_workers, batch_size):
             consecutive_errors = 0
 
             if run.dynamic:
-                with sqlite3.connect(db) as conn:
+                with open_db('w') as conn:
                     conn.executemany(
                         'INSERT OR IGNORE INTO skipped_uids VALUES (?,?)',
                         [(uid, run.run_id) for uid in new_bad_uids])
-                    conn.commit()
 
         if ENABLE_REDO:  # guaranteed not dynamic (checked in __init__)
             run.push(*redo)
@@ -289,9 +268,10 @@ def main(max_workers, batch_size):
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Main loop: continue while requests are in flight OR there's work to do
-        while in_flight or run.remaining:
+        while True:
             loop_start = time.time()
 
+            # Process finished requests:
             if len(in_flight) >= effective_max_workers:
                 logging.info(f"{shutdown_str}{run.run_id}/{model_alias}: {len(in_flight)} requests in flight: waiting for at least one to finish")
                 # At capacity: block until at least one request completes
@@ -303,25 +283,31 @@ def main(max_workers, batch_size):
                 for f in [f for f in in_flight if f.done()]:
                     in_flight.remove(f)
                     handle_result(f)
-
             
-            # Graceful shutdown: drain in-flight requests without submitting new ones
+            # Graceful shutdown
             if shutdown_requested:
                 enter_shutdown_mode("shutdown requested")
             elif consecutive_errors >= 5:
                 enter_shutdown_mode("5 consecutive failures", "failure mode")
 
-            # Submit new work if:
-            #   - there's work to do, AND
-            #   - redo is disabled and not dynamic (submit any size batch), OR
-            #   - we have a full batch worth of work, OR
-            #   - nothing in flight (submit final partial batch)
-            if run.remaining and (not ENABLE_REDO and not run.dynamic
-                                 or run.remaining >= batch_size
-                                 or not in_flight):
+            # Get next set of UIDs if needed
+            if shutdown_str:
+                uids = None
+            elif not in_flight:
                 uids = run.next(seq_id)
-                if not uids:
-                    continue  # dynamic mode: no candidates left
+            elif ENABLE_REDO:
+                uids = run.next(seq_id, threshold=batch_size)
+            elif run.dynamic:
+                uids = run.next(seq_id, threshold=ceil(batch_size/2))
+            else:
+                uids = run.next(seq_id)
+
+            # Break when done
+            if not in_flight and not uids:
+                break
+
+            # Submit new work if any
+            if uids:
                 f = executor.submit(send_request, run, model_alias, seq_id, list(uids))
                 seq_id += 1
                 in_flight.add(f)
@@ -400,7 +386,7 @@ if __name__ == '__main__':
         print(f"available models: {', '.join(models_config.keys())}")
         sys.exit(2)
 
-    with sqlite3.connect(db) as conn:
+    with open_db('w') as conn:
         conn.executemany("insert or ignore into models values (?)",
                          ((k,) for k in models_config.keys()))
 

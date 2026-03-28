@@ -475,7 +475,7 @@ def send_request(run, model_alias, seq_id, uids):
 
     while True:
         try:
-            with sqlite3.connect(db) as conn:
+            with open_db('w') as conn:
                 cur = conn.execute(
                     """INSERT INTO requests (entry_time, send_time, run_id, batch_size, error, model_notes)
                        VALUES ((julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, ?, ?)""",
@@ -498,7 +498,6 @@ def send_request(run, model_alias, seq_id, uids):
                         'INSERT INTO completed_reqs (uid, model) VALUES (?, ?)',
                         [(uid, model_alias) for uid in completed_for_db])
 
-                conn.commit()
                 break  # Success, exit the retry loop
         except sqlite3.OperationalError as e:
             if "locked" not in str(e):

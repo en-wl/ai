@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+from  contextlib import contextmanager
 from pathlib import Path
 
 # === Configurable defaults (can be overridden by req-config.py) ===
@@ -109,6 +110,32 @@ models_config = {
     # }
 }
 
+# === helper function ===
+
+@contextmanager
+def open_db(mode='r'):
+    import sqlite3
+    if mode not in ('r', 'w'):
+        raise ValueError
+    if not os.path.exists(db):
+        raise FileNotFoundError(f"Database not found: {db}")
+    if mode == 'r':
+        conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True, isolation_level=None)
+    else:
+        conn = sqlite3.connect(db, isolation_level=None)
+    conn.execute('PRAGMA temp_store = MEMORY')
+    conn.row_factory = sqlite3.Row
+    if mode == 'r':
+        conn.execute('BEGIN DEFERRED')
+    else:
+        conn.execute('BEGIN IMMEDIATE')
+    try:
+        yield conn
+        if conn.in_transaction:
+            conn.execute('COMMIT')
+    finally:
+        conn.close()
+
 # === Load config ===
 
 _config_path = Path('req-config.py')
@@ -117,8 +144,8 @@ if _config_path.exists():
 
 # === Dynamic column discovery ===
 
-def discover_columns(db_path):
-    with sqlite3.connect(db_path) as conn:
+def discover_columns():
+    with open_db('r') as conn:
         input_info = conn.execute("PRAGMA table_info(input)").fetchall()
         results_info = conn.execute("PRAGMA table_info(results)").fetchall()
 
@@ -130,7 +157,7 @@ def discover_columns(db_path):
 
     return input_cols, result_data_cols, results_all_cols, results_types
 
-input_cols, result_data_cols, results_all_cols, results_types = discover_columns(db)
+input_cols, result_data_cols, results_all_cols, results_types = discover_columns()
 result_col_idx = {col: i for i, col in enumerate(result_data_cols)}
 results_insert_sql = f"INSERT INTO results ({', '.join(results_all_cols)}) VALUES ({', '.join('?' for _ in results_all_cols)})"
 

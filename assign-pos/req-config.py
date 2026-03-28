@@ -62,10 +62,8 @@ else:  # DYNAMIC
         conn.execute(_candidates_sql, {'model': model})
 
     def on_request_complete():
-        import sqlite3 as _sqlite3
         from combine import update_uid
-        with _sqlite3.connect(db) as conn:
-            conn.row_factory = _sqlite3.Row
+        with open_db('w') as conn:
             uids = conn.execute('SELECT DISTINCT uid FROM completed_reqs').fetchall()
             if not uids:
                 return
@@ -78,7 +76,6 @@ else:  # DYNAMIC
                 conn.execute('DELETE FROM combined WHERE uid = ?', (uid,))
                 update_uid(conn, uid, inputs[uid])
             conn.execute('DELETE FROM completed_reqs')
-            conn.commit()
 
     def input_rows(conn, model):
         return conn.execute('SELECT * FROM input')
