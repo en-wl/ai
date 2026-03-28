@@ -24,7 +24,6 @@ override these defaults:
 | `db` | `'data.db'` | SQLite database path |
 | `system_prompt` | `'system_prompt.md'` | Path to system prompt file |
 | `models_config` | *(built-in dict)* | Model definitions (config can override/extend) |
-| `post_run` | `None` | Command to run between rounds, e.g. `['python3', 'populate_size_scores.py']` |
 | `ENABLE_REDO` | `False` | Whether to retry failed UIDs |
 | `temp_override` | `None` | Global temperature override |
 | `key_file` | `'key.txt'` | Path to OpenRouter API key |
@@ -81,9 +80,10 @@ LLM.  Type conversion is automatic: `INTEGER` columns attempt `int()`,
      dynamically reduce the worker count.
    - Ctrl-C triggers a graceful shutdown that drains in-flight requests.
 
-6. **Outer loop** — after each full pass, the `post_run` command (if set)
-   is executed to refresh aggregated scores.  The loop exits when no new
-   uids remain.
+6. **Dynamic mode** — when `DYNAMIC_MODE = True`, candidates are queried
+   each batch via `create_candidates_temp_table()`, and
+   `on_request_complete()` is called after each request to incrementally
+   update combined results.
 
 ## Database Schema
 

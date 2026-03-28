@@ -5,7 +5,6 @@ import time
 import logging
 import sys
 import signal
-import subprocess
 
 from req._config import *
 from req._request import *
@@ -87,7 +86,7 @@ class BatchSession:
             create_candidates_temp_table(conn, self.model_alias, self.run_id)
             conn.execute('''
                 CREATE TEMP TABLE _candidates_w_outstanding AS
-                SELECT c.uid, c.word, c.pos,
+                SELECT c.uid,
                        c.reqs_cnt + coalesce(o.cnt, 0) AS reqs_cnt,
                        c.num - coalesce(o.cnt, 0) AS num
                   FROM _candidates c
@@ -403,19 +402,7 @@ if __name__ == '__main__':
         logging.info(f"BEGIN: {model_alias}: max_workers={max_workers}; batch_size={batch_size}")
         time.sleep(2)
 
-        if DYNAMIC_MODE:
-            main(max_workers, batch_size)
-
-        else:
-            cont = True
-            while True:
-                if post_run is not None:
-                    subprocess.run(post_run, check=True)
-                if not cont:
-                    break
-                cont = main(max_workers, batch_size)
-                if ENABLE_REDO:
-                    cont = False
+        main(max_workers, batch_size)
 
         logging.info(f"END: {model_alias}: {STATE_NAMES[exit_code]}; skipped {len(bad_uids)} UIDs")
         sys.exit(exit_code)

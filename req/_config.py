@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import threading
 from  contextlib import contextmanager
@@ -7,7 +8,6 @@ from pathlib import Path
 
 db = 'data.db'
 system_prompt = 'system_prompt.md'
-post_run = None
 ENABLE_REDO = False
 DYNAMIC_MODE = False
 abort_event = threading.Event()
@@ -141,6 +141,8 @@ def open_db(mode='r'):
 _config_path = Path('req-config.py')
 if _config_path.exists():
     exec(_config_path.read_text(), globals())
+
+key_file = os.environ.get('REQ_KEY_FILE', key_file)
 
 # === Dynamic column discovery ===
 
