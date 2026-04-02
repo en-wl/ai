@@ -172,7 +172,7 @@ def discover_columns():
 
     input_cols = [r[1] for r in input_info]
 
-    results_all_cols = [r[1] for r in results_info]
+    results_all_cols = [r[1] for r in results_info if r[1] != 'row_id']
     results_types = {r[1]: r[2].upper() for r in results_info}
     result_data_cols = [c for c in results_all_cols if c not in ('run_id', 'req_id')]
 

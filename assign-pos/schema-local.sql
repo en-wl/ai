@@ -5,6 +5,7 @@ create table if not exists input (
 );
 
 create table if not exists results (
+  row_id integer primary key,
   uid integer not null,
   run_id integer not null,
   req_id integer not null,
@@ -13,6 +14,8 @@ create table if not exists results (
   pos text not null,
   pos_class text not null,
   notes text not null,
-  primary key (uid, pos, pos_class, req_id)
-) without rowid;
+  unique (uid, pos, pos_class, req_id)
+);
+
+
 

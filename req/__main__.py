@@ -192,6 +192,7 @@ def record_rate_limit():
     rate_limit_hits.append(now)
     # Prune old entries outside the window
     rate_limit_hits[:] = [t for t in rate_limit_hits if now - t < RATE_LIMIT_WINDOW]
+    logging.info("rate limit hit: {len(rate_limit_hits)}")
     return len(rate_limit_hits) >= RATE_LIMIT_THRESHOLD
 
 def signal_handler(sig, frame):

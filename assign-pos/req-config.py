@@ -65,16 +65,20 @@ else:  # DYNAMIC
         conn.execute(_candidates_sql, {'model': model})
 
     def on_request_complete():
-        from combine import update_uid
+        from combine import update_uid, update_view, delete_from
         with open_db('w', 'update') as conn:
             if conn.execute("select 1 from completed_reqs").fetchone() is None:
                 return
             conn.execute("analyze completed_reqs")
-            for row in conn.execute('SELECT * FROM input WHERE uid IN (SELECT uid FROM completed_reqs)'):
-                uid = row['uid']
-                conn.execute('DELETE FROM combined_w_model WHERE uid = ?', (uid,))
-                conn.execute('DELETE FROM combined WHERE uid = ?', (uid,))
-                update_uid(conn, uid, row)
+            filter_clause = "uid IN (SELECT uid FROM completed_reqs)"
+            for row in conn.execute('SELECT * FROM input WHERE ' + filter_clause):
+                update_uid(conn, row['uid'], row)
+            update_view(conn, 'pos_class_cnts_by_model', filter_clause)
+            update_view(conn, 'pos_class_cnts', filter_clause)
+            delete_from(conn, 'pos_cnts_by_model', filter_clause)
+            delete_from(conn, 'lemma_cnts_by_model', filter_clause)
+            delete_from(conn, 'pos_cnts', filter_clause)
+            delete_from(conn, 'lemma_cnts', filter_clause)
             conn.execute('DELETE FROM completed_reqs')
 
     def input_rows(conn, model):

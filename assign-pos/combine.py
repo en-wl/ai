@@ -2,11 +2,213 @@
 
 import sqlite3
 from collections import defaultdict
-
-import time
+from pathlib import Path
 
 NAME_SUBTYPES = {'person', 'surname', 'place', 'demonym'}
 
+def pos_class_cnts_by_model_query(filter_clause=None):
+    filter_clause = 'true' if filter_clause is None else f"({filter_clause})"
+
+    return f"""with
+  totals as (
+    select uid, model, count(distinct req_id) as total
+      from adj_results_by_model
+     where {filter_clause}
+     group by uid, model
+  ),
+  bucket_counts as (
+    select uid, model, pos, pos_class, count(distinct req_id) as cnt
+      from adj_results_by_model
+     where pos is not null and {filter_clause}
+     group by uid, model, pos, pos_class
+  )
+select b.uid, b.model, b.pos, b.pos_class, b.cnt, t.total
+  from bucket_counts as b
+  join totals as t using (uid, model)"""
+
+
+def pos_cnts_by_model_query(filter_clause=None):
+    filter_clause = 'true' if filter_clause is None else f"({filter_clause})"
+
+    return f"""with
+  totals as (
+    select uid, model, count(distinct req_id) as total
+      from adj_results_by_model
+     where {filter_clause}
+     group by uid, model
+  ),
+  pos_counts as (
+    select uid, model, pos, count(distinct req_id) as cnt
+      from adj_results_by_model
+     where pos is not null and {filter_clause}
+     group by uid, model, pos
+  )
+select p.uid, p.model, p.pos, p.cnt, t.total
+  from pos_counts as p
+  join totals as t using (uid, model)"""
+
+
+def lemma_cnts_by_model_query(filter_clause=None):
+    filter_clause = 'true' if filter_clause is None else f"({filter_clause})"
+
+    return f"""with
+  bucket_counts as (
+    select uid, model, pos, pos_class, count(distinct req_id) as total
+      from adj_results_by_model
+     where pos is not null and {filter_clause}
+     group by uid, model, pos, pos_class
+  ),
+  lemma_counts as (
+    select a.uid, a.model, a.pos, a.pos_class, r.lemma, count(distinct a.req_id) as cnt
+      from (select * from adj_results_by_model where {filter_clause}) as a
+      join results as r using (row_id)
+     where a.pos is not null
+     group by a.uid, a.model, a.pos, a.pos_class, r.lemma
+  )
+select l.uid, l.model, l.pos, l.pos_class, l.lemma, l.cnt, b.total
+  from lemma_counts as l
+  join bucket_counts as b using (uid, model, pos, pos_class)"""
+
+
+def pos_class_cnts_query(filter_clause=None):
+    filter_clause = 'true' if filter_clause is None else f"({filter_clause})"
+
+    return f"""with
+  model_totals as (
+    select uid, model, count(distinct req_id) as total
+      from adj_results
+     where {filter_clause}
+     group by uid, model
+  ),
+  bucket_model_counts as (
+    select uid, model, pos, pos_class, count(distinct req_id) as cnt
+      from adj_results
+     where pos is not null and {filter_clause}
+     group by uid, model, pos, pos_class
+  ),
+  exact_counts as (
+    select b.uid,
+           b.pos,
+           b.pos_class,
+           sum(case when b.cnt = t.total then 1 else 0 end) as cnt,
+           sum(1.0 * b.cnt / t.total) as cnt_w
+      from bucket_model_counts as b
+      join model_totals as t using (uid, model)
+     group by b.uid, b.pos, b.pos_class
+  )
+select e.uid, e.pos, e.pos_class, e.cnt, e.cnt_w, t.total
+  from exact_counts as e
+  join (
+    select uid, count(*) as total
+      from model_totals
+     group by uid
+  ) as t using (uid)"""
+
+
+def pos_cnts_query(filter_clause=None):
+    filter_clause = 'true' if filter_clause is None else f"({filter_clause})"
+
+    return f"""with
+  model_totals as (
+    select uid, model, count(distinct req_id) as total
+      from adj_results
+     where {filter_clause}
+     group by uid, model
+  ),
+  pos_model_counts as (
+    select uid, model, pos, count(distinct req_id) as cnt
+      from adj_results
+     where pos is not null and {filter_clause}
+     group by uid, model, pos
+  ),
+  pos_counts as (
+    select p.uid,
+           p.pos,
+           sum(case when p.cnt = t.total then 1 else 0 end) as cnt,
+           sum(1.0 * p.cnt / t.total) as cnt_w
+      from pos_model_counts as p
+      join model_totals as t using (uid, model)
+     group by p.uid, p.pos
+  )
+select p.uid, p.pos, p.cnt, p.cnt_w, t.total
+  from pos_counts as p
+  join (
+    select uid, count(*) as total
+      from model_totals
+     group by uid
+  ) as t using (uid)"""
+
+
+def lemma_cnts_query(filter_clause=None):
+    filter_clause = 'true' if filter_clause is None else f"({filter_clause})"
+
+    return f"""with
+  base as (
+    select a.uid, a.model, a.req_id, a.pos, a.pos_class, r.lemma
+      from (select * from adj_results where {filter_clause}) as a
+      join results as r using (row_id)
+     where a.pos is not null
+  ),
+  bucket_model_counts as (
+    select uid, model, pos, pos_class, count(distinct req_id) as bucket_cnt
+      from base
+     group by uid, model, pos, pos_class
+  ),
+  bucket_totals as (
+    select uid, pos, pos_class, count(distinct model) as total
+      from bucket_model_counts
+     group by uid, pos, pos_class
+  ),
+  lemma_model_counts as (
+    select uid, model, pos, pos_class, lemma, count(distinct req_id) as lemma_cnt
+      from base
+     group by uid, model, pos, pos_class, lemma
+  ),
+  lemma_counts as (
+    select l.uid,
+           l.pos,
+           l.pos_class,
+           l.lemma,
+           sum(case when l.lemma_cnt = b.bucket_cnt then 1 else 0 end) as cnt,
+           sum(1.0 * l.lemma_cnt / b.bucket_cnt) as cnt_w
+      from lemma_model_counts as l
+      join bucket_model_counts as b using (uid, model, pos, pos_class)
+     group by l.uid, l.pos, l.pos_class, l.lemma
+  )
+select l.uid, l.pos, l.pos_class, l.lemma, l.cnt, l.cnt_w, b.total
+  from lemma_counts as l
+  join bucket_totals as b using (uid, pos, pos_class)"""
+
+
+VIEWS = {
+    'pos_class_cnts_by_model': pos_class_cnts_by_model_query,
+    'pos_cnts_by_model': pos_cnts_by_model_query,
+    'lemma_cnts_by_model': lemma_cnts_by_model_query,
+    'pos_class_cnts': pos_class_cnts_query,
+    'pos_cnts': pos_cnts_query,
+    'lemma_cnts': lemma_cnts_query
+}
+
+def delete_from(conn, name, filter_clause = None):
+    if filter_clause is None:
+        conn.execute(f"delete from {name}")
+    else:
+        conn.execute(f"delete from {name} where ({filter_clause})")
+
+def update_view(conn, name, filter_clause = None):
+    delete_from(conn, name, filter_clause)
+    conn.execute(f"insert into {name}\n"
+                 f"{VIEWS[name](filter_clause)}")
+
+def create_as_view(conn, name, filter_clause = None):
+    view_name = f"{name}_view"
+    conn.execute(f"drop view if exists {view_name}")
+    conn.execute(f"create view {view_name} as\n"
+                 f"{VIEWS[name](filter_clause)}")
+
+#
+#
+#
 
 def should_filter(input_row, output_row):
     input_pos = input_row['pos']
@@ -22,6 +224,7 @@ def should_filter(input_row, output_row):
         if input_pos == 'a' and output_pos in ('aj', 'av'):
             return True
     return False
+
 
 def apply_normalization(data):
     """Apply normalization rules.
@@ -39,7 +242,7 @@ def apply_normalization(data):
             for key in abbr_keys:
                 data[candidates[0]].merge(data.pop(key))
         elif len(candidates) == 0:
-            candidates = [k for k in data.keys() if k[0] not in ('abbr','wp') and k[1] == '']
+            candidates = [k for k in data.keys() if k[0] not in ('abbr', 'wp') and k[1] == '']
             if len(candidates) == 1:
                 dst = (candidates[0][0], 'abbr')
                 data[dst].merge(data.pop(candidates[0]))
@@ -73,28 +276,31 @@ def apply_normalization(data):
             data[non_empty[0]].merge(data.pop((pos, '')))
 
 def update_model_data(conn, uid, model, input_row, results_rows):
-    total = len(set(r['req_id'] for r in results_rows))
-
     class Data:
         __slots__ = ('req_ids', 'rows')
+
         def __init__(self):
             self.req_ids = set()
             self.rows = []
+
         def count(self):
             return len(self.req_ids)
+
         def merge(self, other):
             self.req_ids |= other.req_ids
             self.rows += other.rows
+
         def add_row(self, r):
             self.req_ids.add(r['req_id'])
             self.rows.append(r)
 
     data = defaultdict(Data)  # (pos, pos_class) -> Data
-    skipped_req_ids = set()
 
     for r in results_rows:
         if should_filter(input_row, r):
-            skipped_req_ids.add(r['req_id'])
+            conn.execute(
+                "insert into adj_results_by_model values (?,?,?,?,?,?)",
+                (uid, model, r['req_id'], r['row_id'], None, None))
             continue
 
         data[(r['pos'], r['pos_class'])].add_row(r)
@@ -104,153 +310,101 @@ def update_model_data(conn, uid, model, input_row, results_rows):
 
     apply_normalization(data)
 
-    by_pos = defaultdict(set)
-    for (pos, _), d in data.items():
-        by_pos[pos] |= d.req_ids
-
     for (pos, pos_class), d in data.items():
-        lemma_counts = defaultdict(int)
-        for row in d.rows:
-            if row['lemma']:
-                lemma_counts[row['lemma']] += 1
-        best_lemma = max(lemma_counts, key=lemma_counts.get)
-        conn.execute(
-            "insert into combined_w_model values (?,?,?,?,?,?,?,?)",
-            (uid, model, best_lemma, pos, pos_class, len(d.req_ids), len(by_pos[pos]), total))
-
-    if skipped_req_ids:
-        conn.execute(
-            "insert into combined_w_model values (?,?,?,?,?,?,?,?)",
-            (uid, model, None, None, None, len(skipped_req_ids), len(skipped_req_ids), total))
-
-def update_combined_data(conn, uid, input_row, combined_w_model_rows):
-    valid = [r for r in combined_w_model_rows if r['pos'] is not None]
-    if not valid:
-        return
-
-    model_totals = {}
-    for r in valid:
-        model_totals[r['model']] = r['total']
-    total_models = len(model_totals)
-
-    class Data:
-        __slots__ = ('model_counts', 'rows')
-        def __init__(self):
-            self.model_counts = {}   # model -> count
-            self.rows = []
-        def count(self):
-            return sum(cnt / model_totals[m] for m, cnt in self.model_counts.items())
-        def merge(self, other):
-            for m, cnt in other.model_counts.items():
-                self.model_counts[m] = self.model_counts.get(m, 0) + cnt
-            self.rows += other.rows
-
-    data = defaultdict(Data)
-    for r in valid:
-        key = (r['pos'], r['pos_class'])
-        data[key].model_counts[r['model']] = data[key].model_counts.get(r['model'], 0) + r['cnt']
-        data[key].rows.append(r)
-
-    apply_normalization(data)
-
-    # Build pos-level model counts from rows' pos_cnt (already deduplicated per-model)
-    by_pos = defaultdict(lambda: defaultdict(int))  # current_pos -> {model: pos_cnt}
-    seen = set()
-    for (pos, _), d in data.items():
-        for row in d.rows:
-            key = (pos, row['model'], row['pos'])  # (current_pos, model, original_pos)
-            if key not in seen:
-                seen.add(key)
-                by_pos[pos][row['model']] += row['pos_cnt']
-
-    # Aggregate across models
-    for pos, pos_class in sorted(data):
-        d = data[(pos, pos_class)]
-        cnt = 0
-        cnt_w = 0.0
-        pos_cnt = 0
-        pos_cnt_w = 0.0
-        for m, m_total in model_totals.items():
-            m_cnt = d.model_counts.get(m, 0)
-            m_pos_cnt = by_pos[pos].get(m, 0)
-            if m_cnt == m_total:
-                cnt += 1
-            cnt_w += m_cnt / m_total
-            if m_pos_cnt == m_total:
-                pos_cnt += 1
-            pos_cnt_w += m_pos_cnt / m_total
-
-        lemma_counts = defaultdict(int)
-        for row in d.rows:
-            if row['lemma']:
-                lemma_counts[row['lemma']] += row['cnt']
-        best_lemma = max(lemma_counts, key=lemma_counts.get)
-
-        conn.execute(
-            "insert into combined values (?,?,?,?,?,?,?,?,?)",
-            (uid, best_lemma, pos, pos_class, cnt, cnt_w, pos_cnt, pos_cnt_w, total_models))
-
-
-def update_uid(conn, uid, input_row):
-    rows = conn.execute("select * from results_w_model where uid = ?", (uid,)).fetchall()
+        conn.executemany(
+            "insert into adj_results_by_model values (?,?,?,?,?,?)",
+            ((uid, model, row['req_id'], row['row_id'], pos, pos_class)
+             for row in d.rows))
+        
+def update_combined_data(conn, uid):
+    rows = []
+    for row in conn.execute("select * from adj_results_by_model where uid = ?", (uid,)):
+        if row['pos'] is None:
+            conn.execute(
+                "insert into adj_results values (?,?,?,?,?,?)",
+                (uid, row['model'], row['req_id'], row['row_id'], None, None))
+        else:
+            rows.append(row)
     if not rows:
         return
 
-    by_model = defaultdict(list)
+    model_totals = dict(conn.execute(
+        """select model, count(distinct req_id)
+             from adj_results_by_model
+            where uid = ?
+            group by model""",
+        (uid,)).fetchall())
+
+    class Data:
+        __slots__ = ('req_ids_by_model', 'rows')
+
+        def __init__(self):
+            self.req_ids_by_model = defaultdict(set)
+            self.rows = []
+
+        def count(self):
+            return sum(
+                len(req_ids) / model_totals[model]
+                for model, req_ids in self.req_ids_by_model.items()
+            )
+
+        def merge(self, other):
+            for model, req_ids in other.req_ids_by_model.items():
+                self.req_ids_by_model[model] |= req_ids
+            self.rows += other.rows
+
+        def add_row(self, r):
+            self.req_ids_by_model[r['model']].add(r['req_id'])
+            self.rows.append(r)
+
+    data = defaultdict(Data)
     for r in rows:
+        data[(r['pos'], r['pos_class'])].add_row(r)
+
+    apply_normalization(data)
+
+    for (pos, pos_class), d in data.items():
+        conn.executemany(
+            "insert into adj_results values (?,?,?,?,?,?)",
+            ((uid, row['model'], row['req_id'], row['row_id'], pos, pos_class)
+             for row in d.rows))
+
+
+def update_uid(conn, uid, input_row):
+    conn.execute("delete from adj_results where uid = ?", (uid,))
+    conn.execute("delete from adj_results_by_model where uid = ?", (uid,))
+
+    by_model = defaultdict(list)
+    for r in conn.execute(
+            "select model, req_id, row_id, pos, pos_class, notes from results_w_model where uid = ?""",
+            (uid,)):
         by_model[r['model']].append(r)
 
     for model, model_rows in by_model.items():
         update_model_data(conn, uid, model, input_row, model_rows)
 
-    cwm_rows = conn.execute("select * from combined_w_model where uid = ?", (uid,)).fetchall()
-    update_combined_data(conn, uid, input_row, cwm_rows)
+    update_combined_data(conn, uid)
 
 
 def main():
     conn = sqlite3.connect('data.db')
     conn.row_factory = sqlite3.Row
-    conn.execute("begin immediate")
+    conn.executescript(Path('combine-init.sql').read_text())
 
     conn.execute("delete from completed_reqs")
-    conn.execute("drop table if exists combined_w_model")
-    conn.execute("""
-        create table combined_w_model (
-            uid integer not null,
-            model text not null,
-            lemma text,
-            pos text,
-            pos_class text,
-            cnt integer not null,
-            pos_cnt integer not null,
-            total integer not null
-        )
-    """)
-    conn.execute("create index combined_w_model_idx on combined_w_model(uid, model)")
-
-    conn.execute("drop table if exists combined")
-    conn.execute("""
-        create table combined (
-            uid integer not null,
-            lemma text,
-            pos text,
-            pos_class text,
-            cnt integer not null,
-            cnt_w real not null,
-            pos_cnt integer not null,
-            pos_cnt_w real not null,
-            total integer not null
-        )
-    """)
-    conn.execute("create index combined_idx on combined(uid)")
 
     inputs = {}
-    for r in conn.execute("select uid, word, pos from input"):
-        inputs[r['uid']] = dict(r)
+    for r in conn.execute("select uid, pos from input"):
+        inputs[r['uid']] = r
 
     for uid in sorted(inputs):
         update_uid(conn, uid, inputs[uid])
 
+    for name in VIEWS.keys():
+        create_as_view(conn, name)
+        update_view(conn, name)
+
+    conn.execute("analyze")
     conn.commit()
     conn.close()
 
