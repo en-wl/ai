@@ -6,15 +6,22 @@ from pathlib import Path
 
 # === Configurable defaults (can be overridden by req-config.py) ===
 
-db = 'data.db'
+db_file = 'data.db'
+
 system_prompt = 'system_prompt.md'
-ENABLE_REDO = False
-DYNAMIC_MODE = False
-abort_event = threading.Event()
-temp_override = None
 validate_row = None
+
+ENABLE_REDO = False
+
+DYNAMIC_MODE = False
+CROSS_MODEL_DEPS = False
+STALE_RUNS_TIMEOUT = 600               # seconds before outstanding_runs deemed stale
 on_request_complete = None             # callback() — no params, opens DB itself
 create_candidates_temp_table = None    # callback(conn, model, run_id)
+
+pre_run = None     # list of args for subprocess (run once before children start)
+post_run = None    # list of args for subprocess (run once after children finish)
+
 key_file = 'key.txt'
 x_title = None  # required — config must set this
 http_referer = 'https://github.com/en-wl/wordlist'
@@ -22,6 +29,8 @@ http_referer = 'https://github.com/en-wl/wordlist'
 def input_rows(conn, model):
     return conn.execute("select * from input where uid in (select uid from candidates where model = ?)",
                        (model,))
+
+temp_override = None # Model temp. override
 
 models_config = {
     # "claude-sonnet-4.5": {
@@ -113,24 +122,34 @@ models_config = {
 # === helper function ===
 
 @contextmanager
-def open_db(mode='r'):
+def open_db(mode='r', desc = None, timeout = 5000):
+    if desc is None:
+        desc = 'unknown'
     import sqlite3
-    if mode not in ('r', 'w'):
+    if mode not in ('r', 'w', None):
         raise ValueError
-    if not os.path.exists(db):
-        raise FileNotFoundError(f"Database not found: {db}")
+    if not os.path.exists(db_file):
+        raise FileNotFoundError(f"Database not found: {db_file}")
     if mode == 'r':
-        conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True, isolation_level=None)
+        conn = sqlite3.connect(f'file:{db_file}?mode=ro', uri=True, isolation_level=None)
     else:
-        conn = sqlite3.connect(db, isolation_level=None)
+        conn = sqlite3.connect(db_file, isolation_level=None)
+    conn.execute(f'PRAGMA busy_timeout = {timeout}') 
     conn.execute('PRAGMA temp_store = MEMORY')
+    conn.execute('PRAGMA synchronous = normal')
     conn.row_factory = sqlite3.Row
     if mode == 'r':
         conn.execute('BEGIN DEFERRED')
-    else:
+    elif mode == 'w':
+        conn.execute('PRAGMA journal_mode = wal')
         conn.execute('BEGIN IMMEDIATE')
     try:
+        import time, logging
+        t0 = time.monotonic()
         yield conn
+        elapsed = time.monotonic() - t0
+        if elapsed > 0.1:
+            logging.warning('SLOW QUERY: %s: %.3fs', desc, elapsed)
         if conn.in_transaction:
             conn.execute('COMMIT')
     finally:
@@ -178,3 +197,5 @@ headers = {
 }
 
 instructions = Path(system_prompt).read_text(encoding="utf-8")
+
+# === MISC

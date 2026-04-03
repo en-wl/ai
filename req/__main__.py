@@ -8,13 +8,31 @@ import signal
 
 from req._config import *
 from req._request import *
+from req._manager import STATE_NAMES,  run as manager_run
 
-STATE_NAMES = {0: "FINISHED", 1: "SHUTDOWN", 2: "FAILED", 3: "ABORTED"}
-exit_code = 0
+last_log_time = None
+shutdown_str = ""
+def enter_shutdown_mode(reason, prefix = None):
+    global shutdown_str, last_log_time
+    if shutdown_str:
+        return
+    if prefix is None:
+        prefix = reason
+    logging.warning(f"*** ENTERING SHUTDOWN MODE: {reason} ***")
+    shutdown_str = f"{prefix}: "
+    last_log_time = None
+
+@contextmanager
+def shutdown_mode_on_error():
+    try:
+        yield None
+    except Exception as e:
+        logging.error(f"ERROR: {e}")
+        enter_shutdown_mode("failure mode")
 
 bad_uids = set()
 class BatchSession:
-    def __init__(self, model_alias, batch_size):
+    def __init__(self, model_alias, batch_size, run_id):
         if DYNAMIC_MODE and ENABLE_REDO:
             raise RuntimeError("ENABLE_REDO is not supported in DYNAMIC mode")
 
@@ -22,6 +40,7 @@ class BatchSession:
         self.input_data = {}
         self.dynamic = DYNAMIC_MODE
         self.model_alias = model_alias
+        self.run_id = run_id
 
         self.header = '|'.join(input_cols)
         with open_db('r') as conn:
@@ -44,13 +63,12 @@ class BatchSession:
         temperature = model_config.get('temperature', 1) if temp_override is None else temp_override
         reasoning = model_config.get('reasoning', 'n/a')
 
-        with open_db('w') as conn:
-            cur = conn.execute(
-                """INSERT INTO runs (model, start_time, batch_size, temperature, reasoning_effort, sample_type)
-                   VALUES (?, (julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, 'random')""",
-                (model_alias, self.batch_size, temperature, reasoning)
+        with open_db('w', 'batch init') as conn:
+            conn.execute(
+                """INSERT INTO runs (run_id, model, start_time, batch_size, temperature, reasoning_effort, sample_type)
+                   VALUES (?, ?, (julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, 'random')""",
+                (run_id, model_alias, self.batch_size, temperature, reasoning)
             )
-            self.run_id = cur.lastrowid
 
     @property
     def remaining(self):
@@ -68,12 +86,18 @@ class BatchSession:
         random.shuffle(self._uids_todo)
 
     def _local_batch_size(self):
+        # attempt to use equal number of uids per request, rather than sending
+        # full batches and then one with just a few uids
         num_batches = ceil(self.remaining / self.batch_size)
         return floor(self.remaining / num_batches) if num_batches > 0 else 0
 
-    def next(self, seq_id, threshold = -1):
+    def next(self, seq_id, threshold, in_flight):
+        # only returns an empty list when done
+        # returns None if there might be more uids to process
         if self.dynamic:
-            return self._next_dynamic(seq_id, threshold)
+            return self._next_dynamic(seq_id, threshold, in_flight)
+        if self.remaining == 0:
+            return []
         if self.remaining < threshold:
             return None
         size = self._local_batch_size()
@@ -81,8 +105,9 @@ class BatchSession:
         del self._uids_todo[-size:]
         return uids
 
-    def _next_dynamic(self, seq_id, threshold):
-        with open_db('w') as conn:
+    def _next_dynamic(self, seq_id, threshold, in_flight):
+        assert(threshold > 0)
+        with shutdown_mode_on_error(), open_db('w', 'candidates') as conn:
             create_candidates_temp_table(conn, self.model_alias, self.run_id)
             conn.execute('''
                 CREATE TEMP TABLE _candidates_w_outstanding AS
@@ -96,16 +121,53 @@ class BatchSession:
                   WHERE c.num - coalesce(o.cnt, 0) > 0
                     AND c.uid NOT IN (SELECT uid FROM skipped_uids WHERE run_id = ?)
                 ''', (self.model_alias, self.run_id))
-            self._est_remaining = conn.execute('SELECT sum(num) FROM _candidates_w_outstanding').fetchone()[0] or 0
-            if self._est_remaining < threshold:
-                return None
-            uids = [r[0] for r in conn.execute('SELECT uid FROM _candidates_w_outstanding ORDER BY reqs_cnt, num DESC, random() LIMIT ?',
-                                               (self._local_batch_size(),))]
+            num_uids, min_reqs, self._est_remaining = conn.execute(
+                'SELECT count(*), COALESCE(MAX(num),0), COALESCE(sum(NUM),0) FROM _candidates_w_outstanding').fetchone()
+            work_to_do = num_uids >= threshold # or min_reqs > 1
             now = time.time()
-            conn.executemany('INSERT INTO outstanding_reqs VALUES (?,?,?,?,?)',
-                             ((uid, self.model_alias, self.run_id, seq_id, now) for uid in uids))
-            self._est_remaining -= len(uids)
-        return uids
+            def state():
+                return conn.execute("SELECT state from outstanding_runs where run_id = ?", (self.run_id,)).fetchone()[0]
+            def update_state(state):
+                conn.execute("UPDATE outstanding_runs SET state = ?, timestamp = ? WHERE run_id = ?", (state, now, self.run_id,))
+            def get_uids():
+                update_state('active')
+                uids = [r[0] for r in conn.execute('SELECT uid FROM _candidates_w_outstanding ORDER BY reqs_cnt, num DESC, random() LIMIT ?',
+                                                   (self._local_batch_size(),))]
+                conn.executemany('INSERT INTO outstanding_reqs VALUES (?,?,?,?,?)',
+                                 ((uid, self.model_alias, self.run_id, seq_id, now) for uid in uids))
+                self._est_remaining -= len(uids)
+                return uids
+            if in_flight and not work_to_do:
+                return None
+            if not CROSS_MODEL_DEPS:
+                return get_uids()
+            if num_uids != 0:
+                # not done
+                conn.execute("UPDATE outstanding_runs SET state = 'waiting', timestamp = ? where state = 'done'", (now,))
+            if work_to_do:
+                return get_uids()
+            def wakeup():
+                if num_uids == 0:
+                    any_active = conn.execute("SELECT MAX(state = 'active') from outstanding_runs").fetchone()[0]
+                    if any_active:
+                        update_state('waiting')
+                    else:
+                        update_state('done')
+                    return None
+                return get_uids()
+            if state() == 'wakeup':
+                return wakeup()
+            all_done = conn.execute("SELECT MIN(state = 'done') from outstanding_runs").fetchone()[0]
+            if all_done:
+                # trully done
+                return []
+            update_state('waiting')
+            all_waiting = conn.execute("SELECT MIN(state = 'waiting') from outstanding_runs").fetchone()[0]
+            if all_waiting:
+                conn.execute("UPDATE outstanding_runs SET state = 'wakeup', timestamp = ?", (now,))
+                return wakeup()
+            return None
+        return []
 
     def progress_str(self, seq_id):
         remaining_runs = ceil(self.remaining / self.batch_size)
@@ -113,12 +175,11 @@ class BatchSession:
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s.%(msecs)03d: %(message)s',
+    format='%(asctime)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
 shutdown_requested = False
-interrupt_count = 0
 
 # Rate limit tracking
 rate_limit_hits = []
@@ -134,134 +195,99 @@ def record_rate_limit():
     return len(rate_limit_hits) >= RATE_LIMIT_THRESHOLD
 
 def signal_handler(sig, frame):
-    global shutdown_requested, interrupt_count
-    interrupt_count += 1
-
-    if sig == signal.SIGTERM:
-        # SIGTERM goes straight to abort phase
-        if not shutdown_requested:
-            shutdown_requested = True
-        if not abort_event.is_set():
-            logging.info("\nSIGTERM received. Aborting current requests...")
-            logging.info("Send again to force immediate exit.")
-            abort_event.set()
-        else:
-            logging.info("\nForce exit requested. Exiting immediately.")
-            os._exit(128 + sig)
-        return
-
-    if interrupt_count == 1:
-        logging.info("\nCtrl-C detected. Finishing current requests and shutting down gracefully...")
-        logging.info("Press Ctrl-C again to abort current requests.")
-        shutdown_requested = True
-    elif interrupt_count == 2:
-        logging.info("\nAborting current requests. Press Ctrl-C again to force exit.")
+    global shutdown_requested
+    shutdown_requested = True
+    if abort_event.is_set():
+        logging.warning("Aborting current requests...")
+    elif sig == signal.SIGTERM:
+        logging.warning("SIGTERM received. Aborting current requests...")
         abort_event.set()
     else:
-        logging.info("\nForce exit requested. Exiting immediately.")
-        os._exit(128 + sig)
+        logging.warning("Ctrl-C detected. Finishing current requests and shutting down gracefully...")
 
 failed_uids = {}
 consecutive_errors = 0
 model_alias = None
-def main(max_workers, batch_size):
-    run = BatchSession(model_alias, batch_size)
-    if not run.remaining:
-        return False
+
+def main(max_workers, batch_size, run_id):
+    global last_log_time
+    run = BatchSession(model_alias, batch_size, run_id)
+
+    log_str = f"*** RUN STARTING ***: {run.run_id}/{model_alias}: max_workers={max_workers}; batch_size={batch_size}"
     if run.dynamic:
-        logging.info(f"STARTING RUN {run.run_id}/{model_alias}")
+        logging.info(log_str)
     else:
-        logging.info(f"STARTING RUN {run.run_id}/{model_alias}; UIDs: {run.remaining}")
+        logging.info(f"{log_str}; UIDs: {run.remaining}")
+
+    time.sleep(2)
 
     in_flight = set()
     seq_id = 1
     effective_max_workers = max_workers
 
     LAST_LOG_INTERVAL = 20
-    last_log_time = None
-    shutdown_str = ""
-    def enter_shutdown_mode(reason, prefix = None):
-        nonlocal shutdown_str, last_log_time
-        if shutdown_str:
-            return
-        if prefix is None:
-            prefix = reason
-        logging.warning(f"*** ENTERING SHUTDOWN MODE: {reason} ***")
-        shutdown_str = f"{prefix}: "
-        last_log_time = None
 
     def handle_result(future):
-        global consecutive_errors
-        nonlocal effective_max_workers, last_log_time
-        try:
+        global consecutive_errors, last_log_time
+        nonlocal effective_max_workers
+        with shutdown_mode_on_error():
             result = future.result()
-        except Exception as e:
-            logging.exception(f"ERROR: {e}")
-            enter_shutdown_mode("failure mode")
-            return
 
-        failed = result.failed
-        redo = result.redo
-        completed = result.completed
-        hit_429 = result.hit_429
-        error_class = result.error_class
+            if shutdown_str:
+                return 0
 
-        if shutdown_str:
-            return
+            failed = result.failed
+            redo = result.redo
+            completed = result.completed
+            error_class = result.error_class
 
-        if hit_429 and record_rate_limit():
-            old = effective_max_workers
-            effective_max_workers = max(1, min(len(in_flight), old-1))
-            if effective_max_workers < old:
-                logging.warning(f"*** RATE LIMITED: max_workers capped {old} -> {effective_max_workers} ***")
-            elif effective_max_workers == 1:
+            # Rate limit and consecutive systematic/connection error tracking
+            if error_class == '429' and record_rate_limit():
+                old = effective_max_workers
+                effective_max_workers = max(1, min(len(in_flight), old-1))
+                if effective_max_workers < old:
+                    logging.warning(f"*** RATE LIMITED: max_workers capped {old} -> {effective_max_workers} ***")
+                elif effective_max_workers == 1:
+                    consecutive_errors += 1
+            elif error_class is None:
+                consecutive_errors = 0
+            elif error_class != '429':
                 consecutive_errors += 1
-            if not run.dynamic:
+
+            # Reset failure count for UIDs that succeeded
+            for uid in completed:
+                failed_uids.pop(uid, None)
+
+            # Track per-UID failures (always active)
+            for uid in failed:
+                failed_uids[uid] = failed_uids.get(uid, 0) + 1
+            new_bad_uids = {uid for uid, cnt in failed_uids.items() if cnt >= 3}
+            if new_bad_uids:
+                bad_uids.update(new_bad_uids)
+                for uid in new_bad_uids:
+                    del failed_uids[uid]
+                sorted_uids = sorted(new_bad_uids)
+                if len(sorted_uids) > 8:
+                    uids_str = ','.join(str(u) for u in sorted_uids[:7]) + ',…'
+                else:
+                    uids_str = ','.join(str(u) for u in sorted_uids)
+                logging.info(f"{model_alias}: SKIPPING {len(new_bad_uids)} UIDs (3+ consecutive failures): {uids_str}")
+                # reset consecutive_errors as the errors may of been due to specific UIDS.
+                consecutive_errors = 0
+
+                if run.dynamic:
+                    with open_db('w', 'skipped uids') as conn:
+                        conn.executemany(
+                            'INSERT OR IGNORE INTO skipped_uids VALUES (?,?)',
+                            [(uid, run.run_id) for uid in new_bad_uids])
+
+            if not run.dynamic and (error_class == '429' or ENABLE_REDO):
                 run.push(*redo)
-            return
 
-        # Consecutive systematic/connection error tracking
-        if error_class is None:
-            consecutive_errors = 0
-        else:
-            consecutive_errors += 1
+            last_log_time = None
+            return len(completed)
 
-        # Reset failure count for UIDs that succeeded
-        for uid in completed:
-            failed_uids.pop(uid, None)
-
-        # Track per-UID failures (always active)
-        for uid in failed:
-            failed_uids[uid] = failed_uids.get(uid, 0) + 1
-        new_bad_uids = {uid for uid, cnt in failed_uids.items() if cnt >= 3}
-        if new_bad_uids:
-            bad_uids.update(new_bad_uids)
-            for uid in new_bad_uids:
-                del failed_uids[uid]
-            sorted_uids = sorted(new_bad_uids)
-            if len(sorted_uids) > 8:
-                uids_str = ','.join(str(u) for u in sorted_uids[:7]) + ',…'
-            else:
-                uids_str = ','.join(str(u) for u in sorted_uids)
-            logging.warning(f"{model_alias}: SKIPPING {len(new_bad_uids)} UIDs (3+ consecutive failures): {uids_str}")
-            # reset consecutive_errors as the errors may of been due to specific UIDS.
-            consecutive_errors = 0
-
-            if run.dynamic:
-                with open_db('w') as conn:
-                    conn.executemany(
-                        'INSERT OR IGNORE INTO skipped_uids VALUES (?,?)',
-                        [(uid, run.run_id) for uid in new_bad_uids])
-
-        if ENABLE_REDO:  # guaranteed not dynamic (checked in __init__)
-            run.push(*redo)
-
-        # Incremental combine (dynamic mode)
-        if run.dynamic:
-            if on_request_complete is not None:
-                on_request_complete()
-
-        last_log_time = None
+        return 0
 
 
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -269,6 +295,7 @@ def main(max_workers, batch_size):
         # Main loop: continue while requests are in flight OR there's work to do
         while True:
             loop_start = time.time()
+            completed = 0
 
             # Process finished requests:
             if len(in_flight) >= effective_max_workers:
@@ -276,43 +303,50 @@ def main(max_workers, batch_size):
                 # At capacity: block until at least one request completes
                 done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
                 for f in done:
-                    handle_result(f)
+                    completed += handle_result(f)
             else:
                 # Poll for completed requests without blocking
                 for f in [f for f in in_flight if f.done()]:
                     in_flight.remove(f)
-                    handle_result(f)
-            
+                    completed += handle_result(f)
+
             # Graceful shutdown
             if shutdown_requested:
                 enter_shutdown_mode("shutdown requested")
             elif consecutive_errors >= 5:
                 enter_shutdown_mode("5 consecutive failures", "failure mode")
 
+            # Incremental combine (dynamic mode)
+            if run.dynamic and completed and on_request_complete is not None:
+                with shutdown_mode_on_error():
+                    on_request_complete()
+
             # Get next set of UIDs if needed
             if shutdown_str:
-                uids = None
-            elif not in_flight:
-                uids = run.next(seq_id)
-            elif ENABLE_REDO:
-                uids = run.next(seq_id, threshold=batch_size)
-            elif run.dynamic:
-                uids = run.next(seq_id, threshold=ceil(batch_size/2))
+                uids = []
             else:
-                uids = run.next(seq_id)
+                threshold = (batch_size if ENABLE_REDO else
+                             ceil(batch_size/2) if run.dynamic else
+                             1)
+                uids = run.next(seq_id, threshold, bool(in_flight))
 
             # Break when done
-            if not in_flight and not uids:
+            if not in_flight and uids == []:
                 break
 
             # Submit new work if any
             if uids:
-                f = executor.submit(send_request, run, model_alias, seq_id, list(uids))
-                seq_id += 1
-                in_flight.add(f)
-                last_log_time = time.time()
+                logging.info(f"starting {run.run_id}/{model_alias} {run.progress_str(seq_id)}; UIDs: {len(uids)}; req in flight: {len(in_flight) + 1}")
+                with shutdown_mode_on_error():
+                    f = executor.submit(send_request, run, model_alias, seq_id, list(uids))
+                    seq_id += 1
+                    in_flight.add(f)
+                    last_log_time = time.time()
             elif in_flight and (last_log_time is None or time.time() - last_log_time >= LAST_LOG_INTERVAL):
                 logging.info(f"{shutdown_str}{run.run_id}/{model_alias}: {len(in_flight)} requests still pending")
+                last_log_time = time.time()
+            elif last_log_time is None or time.time() - last_log_time >= LAST_LOG_INTERVAL:
+                logging.info(f"{run.run_id}/{model_alias}: waiting for other runs to finish")
                 last_log_time = time.time()
 
             # Ensure at least 2 seconds between loop iterations
@@ -320,22 +354,31 @@ def main(max_workers, batch_size):
             if elapsed < 2:
                 time.sleep(2 - elapsed)
 
-        if shutdown_str:
-            logging.info(f"ABORTED RUN {run.run_id}/{model_alias}")
-            global exit_code
-            if abort_event.is_set():
-                exit_code = max(exit_code, 3)  # ABORTED
-            elif "failure" in shutdown_str:
-                exit_code = max(exit_code, 2)  # FAILED
-            else:
-                exit_code = max(exit_code, 1)  # SHUTDOWN
-            return None
+    if shutdown_str:
+        if abort_event.is_set():
+            exit_code = 3  # ABORTED
+        elif "failure" in shutdown_str:
+            exit_code = 2  # FAILED
+        else:
+            exit_code = 1  # SHUTDOWN
+    else:
+        exit_code = 0
 
-    logging.info(f"COMPLETED RUN {run.run_id}/{model_alias}")
-    return True
+    logging.info(f"*** RUN {STATE_NAMES[exit_code]} ***: {run.run_id}/{model_alias}: skipped {len(bad_uids)} UIDs")
+    return exit_code
 
 if __name__ == '__main__':
     args = sys.argv[1:]
+    managed = False
+    run_id = None
+    if args and args[0] == '--managed':
+        managed = True
+        args = args[1:]
+        if not args or not args[0][:1].isdigit():
+            print("error: --managed requires a run_id argument")
+            sys.exit(2)
+        run_id = int(args[0])
+        args = args[1:]
     if not args:
         print(f"usage: python3 -m req <model> [model2 ...] [max_workers] [batch_size]")
         print(f"\navailable models: {', '.join(models_config.keys())}")
@@ -389,8 +432,7 @@ if __name__ == '__main__':
         conn.executemany("insert or ignore into models values (?)",
                          ((k,) for k in models_config.keys()))
 
-    if len(models) > 1:
-        from req._manager import run as manager_run
+    if not managed:
         manager_run(models, extra_args=rest)
     else:
         signal.signal(signal.SIGINT, signal_handler)
@@ -399,10 +441,5 @@ if __name__ == '__main__':
         model_alias = models[0]
         batch_size = batch_size_override or models_config[model_alias]['batch_size']
 
-        logging.info(f"BEGIN: {model_alias}: max_workers={max_workers}; batch_size={batch_size}")
-        time.sleep(2)
-
-        main(max_workers, batch_size)
-
-        logging.info(f"END: {model_alias}: {STATE_NAMES[exit_code]}; skipped {len(bad_uids)} UIDs")
-        sys.exit(exit_code)
+        rc = main(max_workers, batch_size, run_id)
+        sys.exit(rc)

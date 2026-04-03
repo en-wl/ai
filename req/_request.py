@@ -13,6 +13,8 @@ from urllib3.util.retry import Retry
 
 from req._config import *
 
+abort_event = threading.Event()
+
 # Thread safety: send_request() runs in a ThreadPoolExecutor from __main__.py,
 # so all code in this module must be safe for concurrent execution.  This works
 # because every function uses only local variables and read-only module-level
@@ -32,8 +34,7 @@ class RequestResult(NamedTuple):
     failed: set = frozenset()
     redo: set = frozenset()
     completed: set = frozenset()
-    hit_429: bool = False
-    error_class: str = None  # 'connection', 'model', or None
+    error_class: str = None  # '429', 'connection', 'model', or None
 
 @dataclass
 class ParseResult:
@@ -325,8 +326,6 @@ def send_request(run, model_alias, seq_id, uids):
     if not uids:
         return RequestResult()
 
-    logging.info(f"starting {run.run_id}/{model_alias} {run.progress_str(seq_id)}; UIDs: {len(uids)}")
-
     model = models_config[model_alias]
     model_id = model['name']
 
@@ -369,6 +368,7 @@ def send_request(run, model_alias, seq_id, uids):
 
     parsed_result = ParseResult()
     error_msg = None
+    error_class = None
     adapter = HTTPAdapter(
         max_retries=retry_strategy,
     )
@@ -379,6 +379,7 @@ def send_request(run, model_alias, seq_id, uids):
     timeout = cfg.get('timeout', 30)
 
     data = {}
+    resp = None
     send_time = time.time()
     try:
         resp = http_session.post(url, headers=headers, json=payload, timeout=timeout, stream=True)
@@ -443,23 +444,25 @@ def send_request(run, model_alias, seq_id, uids):
 
     except requests.HTTPError as e:
         error_msg = f"{type(e).__name__}: {e}"
+        error_class = 'connection'
         if e.response is None:
             data = {"error": error_msg}
         else:
             resp = e.response
             if resp.status_code == 429:
-                logging.info(f"rate limited (429): {run.run_id}/{model_alias} #{seq_id}.")
-                return RequestResult(redo=set(uids), hit_429=True)
+                error_class = '429'
             data = {"error": error_msg,
                     "status_code": resp.status_code,
                     "reason": resp.reason,
                     "body": resp.text}
     except (requests.exceptions.Timeout, urllib3.exceptions.TimeoutError) as e:
         error_msg = f"{type(e).__name__}: {e}"
+        error_class = 'connection'
         data['error'] = error_msg
     except Exception as e:
         logging.exception(e)
         error_msg = f"{type(e).__name__}: {e}"
+        error_class = 'connection'
         data["error"] = error_msg
 
     try:
@@ -472,10 +475,11 @@ def send_request(run, model_alias, seq_id, uids):
     if not parsed_result.rows and error_msg is None:
         error_code = parsed_result.errors[-1]['error_code'] if parsed_result.errors else "UNKNOWN"
         error_msg = f"No Results: {error_code}"
+        error_class = 'model'
 
     while True:
         try:
-            with open_db('w') as conn:
+            with open_db('w', 'results') as conn:
                 cur = conn.execute(
                     """INSERT INTO requests (entry_time, send_time, run_id, batch_size, error, model_notes)
                        VALUES ((julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, ?, ?)""",
@@ -495,24 +499,16 @@ def send_request(run, model_alias, seq_id, uids):
                         (run.run_id, seq_id))
                     completed_for_db = set(row['uid'] for row in parsed_result.rows) - constraint_failed
                     conn.executemany(
-                        'INSERT INTO completed_reqs (uid, model) VALUES (?, ?)',
-                        [(uid, model_alias) for uid in completed_for_db])
+                        'INSERT OR IGNORE INTO completed_reqs (uid, model, run_id) VALUES (?, ?, ?)',
+                        [(uid, model_alias, run.run_id) for uid in completed_for_db])
 
                 break  # Success, exit the retry loop
         except sqlite3.OperationalError as e:
             if "locked" not in str(e):
                 raise
-            logging.info(f"SQLite locked for {model_alias} #{seq_id}: {e}. Retrying in 1 second...")
-            time.sleep(1)
+            logging.info(f"SQLite locked for {model_alias} #{seq_id}: {e}. Retrying in 5 second...")
+            time.sleep(5)
             continue
-
-    # Classify error
-    if error_msg:
-        error_class = 'connection'
-    elif not parsed_result.rows:
-        error_class = 'model'
-    else:
-        error_class = None
 
     # Constraint violations always count as per-UID failures
     failed |= constraint_failed

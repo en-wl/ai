@@ -4,20 +4,6 @@ create table if not exists input (
   pos not null
 );
 
-create table if not exists model_size_scores (
-  uid integer not null,
-  pos text not null,
-  model text not null,
-  size integer not null,
-  lower real not null,
-  higher real not null,
-  s_60 real not null,
-  s_70 real not null,
-  s_80 real not null,
-  s_99 real not null,
-  primary key (uid, pos, model)
-) without rowid;
-
 create table if not exists results (
   uid integer not null,
   run_id integer not null,

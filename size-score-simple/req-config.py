@@ -3,6 +3,9 @@ from unidecode import unidecode
 x_title = 'Corpus Size Scoring'
 DYNAMIC_MODE = True
 
+pre_run = ['python3', 'populate_size_scores.py']
+post_run = ['python3', 'populate_size_scores.py']
+
 def create_candidates_temp_table(conn, model, run_id):
     conn.execute('CREATE TEMP TABLE _candidates AS SELECT uid, num_runs AS reqs_cnt, 1 AS num FROM candidates WHERE model = :model',
                  {'model': model})

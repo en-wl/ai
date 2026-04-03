@@ -32,6 +32,9 @@ possible_poses = {*pos_map.keys(), *orig_poses}
 # models_config['qwen3-235b-a22b']['batch_size'] = 50
 models_config['deepseek-v3.2']['batch_size'] = 50
 
+pre_run = ['python3', 'populate_size_scores.py']
+post_run = ['python3', 'populate_size_scores.py']
+
 def create_candidates_temp_table(conn, model, run_id):
     conn.execute('CREATE TEMP TABLE _candidates AS SELECT uid, num_runs AS reqs_cnt, 1 AS num FROM candidates WHERE model = :model',
                  {'model': model})

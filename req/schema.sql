@@ -1,3 +1,6 @@
+.once /dev/null
+pragma journal_mode = wal;
+
 create table if not exists models (
   model text primary key
 ) without rowid;
@@ -36,18 +39,37 @@ create table if not exists raw_data (
   response text
 );
 
-create table if not exists outstanding_reqs (
+begin;
+
+drop table if exists outstanding_runs;
+create table outstanding_runs (
+  run_id integer primary key,
+  timestamp real not null,
+  state text not null check (state in ('active',   -- actively processing uids
+                                       'waiting',  -- waiting for other runs to finish
+                                       'wakeup',   -- other runs finish, processing reaming uids
+                                       'done'))    -- no more uids to process at this time
+);
+
+drop table if exists outstanding_reqs;
+create table outstanding_reqs (
   uid integer not null,
   model text not null,
   run_id integer not null,
   seq_id integer not null,
-  timestamp real not null    -- shared across all entries for (run_id, seq_id)
-);
+  timestamp real not null,
+  primary key (run_id, seq_id, uid)
+) without rowid;
 
-create table if not exists completed_reqs (
+drop table if exists completed_reqs;
+create table completed_reqs (
   uid integer not null,
-  model text not null
-);
+  model text not null,
+  run_id integer not null,
+  primary key (run_id, uid)
+) without rowid;
+
+commit;
 
 create table if not exists skipped_uids (
   uid integer not null,

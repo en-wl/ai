@@ -15,7 +15,12 @@ insert into input (word, pos) values
   ('both', '?'),
   ('neither', '?'),
   ('only', '?'),
-  ('yet', '?')
+  ('yet', '?'),
+  ('Baton', '?'),
+  ('Rouge', '?'),
+  ('Paso', '?'),
+  ('Des', '?'),
+  ('Moines', '?')
 ;
 
 commit;

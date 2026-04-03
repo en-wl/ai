@@ -1,0 +1,8 @@
+__pycache__
+key.txt
+q*.sql
+data*.db
+data*.db-wal
+data*.db-shm
+/w-*/
+

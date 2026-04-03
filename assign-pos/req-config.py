@@ -3,8 +3,8 @@ from pathlib import Path
 import os
 
 mode = os.getenv('REQ_MODE')
-if mode not in ('INIT', 'REDO', 'DYNAMIC'):
-    raise ValueError('REQ_MODE env var must be defined and one of INIT REDO DYNAMIC')
+if mode not in ('ONCE', 'DYNAMIC'):
+    raise ValueError('REQ_MODE env var must be defined and one of ONCE DYNAMIC')
 
 x_title = 'POS Assignment'
 key_file = '/home/kevina/wordlist/keys/openrouter.txt'
@@ -13,7 +13,7 @@ key_file = '/home/kevina/wordlist/keys/openrouter.txt'
 #models_config['deepseek-v3.2']['batch_size'] = 50
 for k,v in models_config.items():
     v['reasoning'] = "none"
-models_config["gpt-oss-120b"]["reasoning"] = "minimal"
+models_config["gpt-oss-120b"]["reasoning"] = "low"
 
 
 pos_map = {
@@ -37,24 +37,27 @@ pos_map = {
     'interjection': 'i', 
     'abbr': 'abbr',
     'abbreviation': 'abbr',
+    'word-part': 'wp',
+    'word_part': 'wp',
+    'word part': 'wp',
 }
 orig_poses = {'?', 'n', 'v', 'm', 'a'}
 possible_poses = {*pos_map.keys(), *orig_poses}
 
 pos_classes = {'person','surname','place','name','demonym', 'abbr', 'none'}
 
-ENABLE_REDO = True if mode == 'INIT' else False
+pre_run = ['python3', 'combine.py']
+post_run = ['python3', 'combine.py']
 
-if mode == 'INIT':
+ENABLE_REDO = True if mode == 'ONCE' else False
+
+if mode == 'ONCE':
     input_rows_sql = 'select * from input'
     def input_rows(conn, model):
         return conn.execute(input_rows_sql)
-elif mode == 'REDO':
-    input_rows_sql = Path("candidates.sql.in").read_text()
-    def input_rows(conn, model):
-        return conn.execute(input_rows_sql, {'model': model})
 else:  # DYNAMIC
     DYNAMIC_MODE = True
+    CROSS_MODEL_DEPS = True
 
     _candidates_sql = Path("candidates-dynamic.sql.in").read_text()
 
@@ -63,18 +66,15 @@ else:  # DYNAMIC
 
     def on_request_complete():
         from combine import update_uid
-        with open_db('w') as conn:
-            uids = conn.execute('SELECT DISTINCT uid FROM completed_reqs').fetchall()
-            if not uids:
+        with open_db('w', 'update') as conn:
+            if conn.execute("select 1 from completed_reqs").fetchone() is None:
                 return
-            inputs = {r['uid']: dict(r) for r in
-                      conn.execute('SELECT * FROM input WHERE uid IN '
-                                   '(SELECT DISTINCT uid FROM completed_reqs)')}
-            for r in uids:
-                uid = r['uid']
+            conn.execute("analyze completed_reqs")
+            for row in conn.execute('SELECT * FROM input WHERE uid IN (SELECT uid FROM completed_reqs)'):
+                uid = row['uid']
                 conn.execute('DELETE FROM combined_w_model WHERE uid = ?', (uid,))
                 conn.execute('DELETE FROM combined WHERE uid = ?', (uid,))
-                update_uid(conn, uid, inputs[uid])
+                update_uid(conn, uid, row)
             conn.execute('DELETE FROM completed_reqs')
 
     def input_rows(conn, model):
