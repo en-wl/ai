@@ -57,7 +57,7 @@ models_config = {
     },
     "gpt-oss-120b": {
         "name": "openai/gpt-oss-120b",
-        "providers": ["deepinfra/turbo"], # deepinfra/bf16  ["crusoe/bf16"],
+        "providers": ["deepinfra/bf16"], # [], # "chutes/bf16"
         "reasoning": "medium",
         "batch_size": 100,
     },
@@ -94,7 +94,12 @@ models_config = {
     # },
     "llama-4-maverick": {
         "name": "meta-llama/llama-4-maverick",
-        "providers": ["deepinfra/base", "parasail/fp8"],
+        "providers": ["deepinfra/base"], #  "parasail/fp8"],
+        "batch_size": 100,
+    },
+    "llama-4-scout": {
+        "name": "meta-llama/llama-4-scout",
+        "providers": ["novita/bf16"],
         "batch_size": 100,
     },
     "qwen3-235b-a22b": {
@@ -127,6 +132,8 @@ models_config = {
 
 # === helper function ===
 
+SLOW_QUERY_THRESHOLD = 0.2
+
 @contextmanager
 def open_db(mode='r', desc = None, timeout = 5000):
     if desc is None:
@@ -154,7 +161,7 @@ def open_db(mode='r', desc = None, timeout = 5000):
         t0 = time.monotonic()
         yield conn
         elapsed = time.monotonic() - t0
-        if elapsed > 0.1:
+        if elapsed > SLOW_QUERY_THRESHOLD:
             logging.warning('SLOW QUERY: %s: %.3fs', desc, elapsed)
         if conn.in_transaction:
             conn.execute('COMMIT')
@@ -165,7 +172,10 @@ def open_db(mode='r', desc = None, timeout = 5000):
 
 _config_path = Path('req-config.py')
 if _config_path.exists():
+    _config_dir = _config_path.resolve().parent
     exec(_config_path.read_text(), globals())
+else:
+    _config_dir = None
 
 key_file = os.environ.get('REQ_KEY_FILE', key_file)
 
@@ -202,6 +212,16 @@ headers = {
     "HTTP-Referer": http_referer,
 }
 
-instructions = Path(system_prompt).read_text(encoding="utf-8")
+def _resolve_file(name):
+    p = Path(name)
+    if p.exists():
+        return p
+    if _config_dir:
+        p2 = _config_dir / name
+        if p2.exists():
+            return p2
+    return p  # fall back to original for the error message
+
+instructions = _resolve_file(system_prompt).read_text(encoding="utf-8")
 
 # === MISC

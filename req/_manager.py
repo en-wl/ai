@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+import sqlite3
 from random import random
 
 STATE_NAMES = {0: "FINISHED", 1: "SHUTDOWN", 2: "FAILED", 3: "ABORTED", 4: "KILLED"}

@@ -27,7 +27,7 @@ def shutdown_mode_on_error():
     try:
         yield None
     except Exception as e:
-        logging.error(f"ERROR: {e}")
+        logging.exception(f"ERROR: {e}")
         enter_shutdown_mode("failure mode")
 
 bad_uids = set()

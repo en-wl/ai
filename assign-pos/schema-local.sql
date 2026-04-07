@@ -17,5 +17,4 @@ create table if not exists results (
   unique (uid, pos, pos_class, req_id)
 );
 
-
-
+create index if not exists results_run_id on results(run_id, uid, req_id);

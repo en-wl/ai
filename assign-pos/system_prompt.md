@@ -92,7 +92,7 @@ abbreviations, or dictionary words, even if they often appear inside larger
 names or compounds.
 
 If the input POS is `n` or `v` than the POS is a noun or verb respectively and
-not the other one.  If the input POS is `m` then it is at least a verb, but it
+not the other one.  If the input POS is `m` then it is probably a verb, but it
 might also be a noun so carefully consider both.  For any of `n`, `v`, or `m`,
 the lemma might also be some other POS (that is not a noun or verb), including
 an adj. or adv.
@@ -122,7 +122,7 @@ The `pos_class` field is a string used to qualify the POS.  It should be one of:
     place: geographical place: United States, Maryland, Boston, etc.
     name: a proper noun/adj when no other label is a good fit
 
-    demonym: person or people related to a place
+    demonym: related to a place; both nouns and adjectives
 
     abbr: an abbreviation that takes on inflected forms such as FAQs
 

@@ -6,6 +6,11 @@ from pathlib import Path
 
 NAME_SUBTYPES = {'person', 'surname', 'place', 'demonym'}
 
+FINAL_MODELS = None
+_config_path = Path('combine-config.py')
+if _config_path.exists():
+    exec(_config_path.read_text(), globals())
+
 def pos_class_cnts_by_model_query(filter_clause=None):
     filter_clause = 'true' if filter_clause is None else f"({filter_clause})"
 
@@ -317,8 +322,11 @@ def update_model_data(conn, uid, model, input_row, results_rows):
              for row in d.rows))
         
 def update_combined_data(conn, uid):
+    filter_clause = 'true'
+    if FINAL_MODELS is not None:
+        filter_clause = "model in ({})".format(','.join(f"'{model}'" for model in FINAL_MODELS))
     rows = []
-    for row in conn.execute("select * from adj_results_by_model where uid = ?", (uid,)):
+    for row in conn.execute(f"select * from adj_results_by_model where uid = ? and {filter_clause}", (uid,)):
         if row['pos'] is None:
             conn.execute(
                 "insert into adj_results values (?,?,?,?,?,?)",
@@ -387,9 +395,10 @@ def update_uid(conn, uid, input_row):
 
 
 def main():
+    _dir = Path(__file__).resolve().parent
     conn = sqlite3.connect('data.db')
     conn.row_factory = sqlite3.Row
-    conn.executescript(Path('combine-init.sql').read_text())
+    conn.executescript((_dir / 'combine-init.sql').read_text())
 
     conn.execute("delete from completed_reqs")
 

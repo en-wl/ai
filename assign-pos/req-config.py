@@ -1,6 +1,12 @@
 from unidecode import unidecode
 from pathlib import Path
-import os
+import os, sys
+
+_dir = _config_dir
+if str(_dir) not in sys.path:
+    sys.path.insert(0, str(_dir))
+
+SLOW_QUERY_THRESHOLD = 0.35
 
 mode = os.getenv('REQ_MODE')
 if mode not in ('ONCE', 'DYNAMIC'):
@@ -46,8 +52,8 @@ possible_poses = {*pos_map.keys(), *orig_poses}
 
 pos_classes = {'person','surname','place','name','demonym', 'abbr', 'none'}
 
-pre_run = ['python3', 'combine.py']
-post_run = ['python3', 'combine.py']
+pre_run = ['python3', str(_dir / 'combine.py')]
+post_run = ['python3', str(_dir / 'combine.py')]
 
 ENABLE_REDO = True if mode == 'ONCE' else False
 
@@ -59,7 +65,7 @@ else:  # DYNAMIC
     DYNAMIC_MODE = True
     CROSS_MODEL_DEPS = True
 
-    _candidates_sql = Path("candidates-dynamic.sql.in").read_text()
+    _candidates_sql = (_dir / "candidates-dynamic.sql.in").read_text()
 
     def create_candidates_temp_table(conn, model, run_id):
         conn.execute(_candidates_sql, {'model': model})
