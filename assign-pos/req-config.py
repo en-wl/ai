@@ -82,8 +82,10 @@ else:  # DYNAMIC
             update_view(conn, 'pos_class_cnts_by_model', filter_clause)
             update_view(conn, 'pos_class_cnts', filter_clause)
             delete_from(conn, 'pos_cnts_by_model', filter_clause)
+            delete_from(conn, 'class_cnts_by_model', filter_clause)
             delete_from(conn, 'lemma_cnts_by_model', filter_clause)
             delete_from(conn, 'pos_cnts', filter_clause)
+            delete_from(conn, 'class_cnts', filter_clause)
             delete_from(conn, 'lemma_cnts', filter_clause)
             conn.execute('DELETE FROM completed_reqs')
 

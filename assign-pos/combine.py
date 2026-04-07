@@ -55,6 +55,28 @@ select p.uid, p.model, p.pos, p.cnt, p.obscure, t.total
   join totals as t using (uid, model)"""
 
 
+def class_cnts_by_model_query(filter_clause=None):
+    filter_clause = 'true' if filter_clause is None else f"({filter_clause})"
+
+    return f"""with
+  totals as (
+    select uid, model, count(distinct req_id) as total
+      from adj_results_by_model
+     where {filter_clause}
+     group by uid, model
+  ),
+  class_counts as (
+    select uid, model, pos_class, count(distinct req_id) as cnt,
+           1.0 * count(distinct case when obscure then req_id end) / count(distinct req_id) as obscure
+      from adj_results_by_model
+     where pos is not null and {filter_clause}
+     group by uid, model, pos_class
+  )
+select c.uid, c.model, c.pos_class, c.cnt, c.obscure, t.total
+  from class_counts as c
+  join totals as t using (uid, model)"""
+
+
 def lemma_cnts_by_model_query(filter_clause=None):
     filter_clause = 'true' if filter_clause is None else f"({filter_clause})"
 
@@ -150,6 +172,42 @@ select p.uid, p.pos, p.cnt, p.cnt_w, p.obscure, t.total
   ) as t using (uid)"""
 
 
+def class_cnts_query(filter_clause=None):
+    filter_clause = 'true' if filter_clause is None else f"({filter_clause})"
+
+    return f"""with
+  model_totals as (
+    select uid, model, count(distinct req_id) as total
+      from adj_results
+     where {filter_clause}
+     group by uid, model
+  ),
+  class_model_counts as (
+    select uid, model, pos_class, count(distinct req_id) as cnt,
+           1.0 * count(distinct case when obscure then req_id end) / count(distinct req_id) as obscure
+      from adj_results
+     where pos is not null and {filter_clause}
+     group by uid, model, pos_class
+  ),
+  class_counts as (
+    select c.uid,
+           c.pos_class,
+           sum(case when c.cnt = t.total then 1 else 0 end) as cnt,
+           sum(1.0 * c.cnt / t.total) as cnt_w,
+           avg(c.obscure) as obscure
+      from class_model_counts as c
+      join model_totals as t using (uid, model)
+     group by c.uid, c.pos_class
+  )
+select c.uid, c.pos_class, c.cnt, c.cnt_w, c.obscure, t.total
+  from class_counts as c
+  join (
+    select uid, count(*) as total
+      from model_totals
+     group by uid
+  ) as t using (uid)"""
+
+
 def lemma_cnts_query(filter_clause=None):
     filter_clause = 'true' if filter_clause is None else f"({filter_clause})"
 
@@ -194,9 +252,11 @@ select l.uid, l.pos, l.pos_class, l.lemma, l.cnt, l.cnt_w, b.total
 VIEWS = {
     'pos_class_cnts_by_model': pos_class_cnts_by_model_query,
     'pos_cnts_by_model': pos_cnts_by_model_query,
+    'class_cnts_by_model': class_cnts_by_model_query,
     'lemma_cnts_by_model': lemma_cnts_by_model_query,
     'pos_class_cnts': pos_class_cnts_query,
     'pos_cnts': pos_cnts_query,
+    'class_cnts': class_cnts_query,
     'lemma_cnts': lemma_cnts_query
 }
 

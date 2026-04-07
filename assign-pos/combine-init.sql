@@ -6,9 +6,11 @@ drop table if exists combined_by_model;
 
 drop table if exists pos_class_cnts_by_model;
 drop table if exists pos_cnts_by_model;
+drop table if exists class_cnts_by_model;
 drop table if exists lemma_cnts_by_model;
 drop table if exists pos_class_cnts;
 drop table if exists pos_cnts;
+drop table if exists class_cnts;
 drop table if exists lemma_cnts;
 drop table if exists adj_results;
 drop table if exists adj_results_by_model;
@@ -58,6 +60,16 @@ create table pos_cnts_by_model (
   primary key (uid, model, pos)
 ) without rowid;
 
+create table class_cnts_by_model (
+  uid integer not null,
+  model text not null,
+  pos_class text not null,
+  cnt integer not null,
+  obscure real not null,
+  total integer not null,
+  primary key (uid, model, pos_class)
+) without rowid;
+
 create table lemma_cnts_by_model (
   uid integer not null,
   model text not null,
@@ -88,6 +100,16 @@ create table pos_cnts (
   obscure real not null,
   total integer not null,
   primary key (uid, pos)
+) without rowid;
+
+create table class_cnts (
+  uid integer not null,
+  pos_class text not null,
+  cnt integer not null,
+  cnt_w real not null,
+  obscure real not null,
+  total integer not null,
+  primary key (uid, pos_class)
 ) without rowid;
 
 create table lemma_cnts (
