@@ -69,6 +69,12 @@ models_config = {
         "stop": "<<<END>>>",
         "special": "After the Notes section, output the exact text `<<<END>>>` on its own line, then stop.",
     },
+    "gemma-4-31b": {
+        "name": "google/gemma-4-31b-it",
+        "providers": ["parasail/bf16", "akashml/bf16", "venice/bf16"],
+        "reasoning": "low",
+        "batch_size": 100,
+    },
     "grok-4.1-fast": {
         "name": "x-ai/grok-4.1-fast",
         "providers": ["xai"],
