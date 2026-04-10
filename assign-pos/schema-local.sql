@@ -25,6 +25,10 @@ drop index if exists results_run_id;
 create index results_run_id
   on results_all(run_id, uid, req_id) where exclude is null;
 
+-- Index to make sure results_run_id is used
+drop index if exists runs_model;
+create index runs_model ON runs(model);
+
 -- View: drop-in replacement for old results table
 drop view if exists results;
 create view results as
