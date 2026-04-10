@@ -122,7 +122,7 @@ def validate_row(row, input_row):
         # can't fix row, just return
         return row, None
 
-    # Lemma matching (unidecode overlap check)
+    # Word matching (unidecode overlap check)
     input_word = unidecode(input_row['word']).lower()
     word = unidecode(row.word).lower()
     if input_word != word:
@@ -148,6 +148,8 @@ def validate_row(row, input_row):
     if pos_class not in pos_classes:
         if pos == '':
             pos_class = 'none'
+        elif pos_class == 'acronym':
+            pos_class = 'abbr'
         else:
             return row, {'error_code': 'INVALID_POS_CLASS', 'error_msg': f"Invalid POS Class: {row.pos_class}"}
     if pos_class == 'none':
