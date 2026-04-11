@@ -5,6 +5,7 @@ import time
 import logging
 import sys
 import signal
+import random
 
 from req._config import *
 from req._request import *
@@ -181,20 +182,6 @@ logging.basicConfig(
 
 shutdown_requested = False
 
-# Rate limit tracking
-rate_limit_hits = []
-RATE_LIMIT_WINDOW = 30  # seconds
-RATE_LIMIT_THRESHOLD = 3  # hits within window to trigger cap
-
-def record_rate_limit():
-    """Record a 429 hit and return True if threshold exceeded."""
-    now = time.time()
-    rate_limit_hits.append(now)
-    # Prune old entries outside the window
-    rate_limit_hits[:] = [t for t in rate_limit_hits if now - t < RATE_LIMIT_WINDOW]
-    logging.info("rate limit hit: {len(rate_limit_hits)}")
-    return len(rate_limit_hits) >= RATE_LIMIT_THRESHOLD
-
 def signal_handler(sig, frame):
     global shutdown_requested
     shutdown_requested = True
@@ -206,8 +193,9 @@ def signal_handler(sig, frame):
     else:
         logging.warning("Ctrl-C detected. Finishing current requests and shutting down gracefully...")
 
+LAST_LOG_INTERVAL = 20
+
 failed_uids = {}
-consecutive_errors = 0
 model_alias = None
 
 def main(max_workers, batch_size, run_id):
@@ -223,37 +211,33 @@ def main(max_workers, batch_size, run_id):
     time.sleep(2)
 
     in_flight = set()
+    uids_processed = 0
     seq_id = 1
     effective_max_workers = max_workers
-
-    LAST_LOG_INTERVAL = 20
+    interval = 2
+    error_delay = 1
+    connection_errors = 0
+    other_errors = 0
 
     def handle_result(future):
-        global consecutive_errors, last_log_time
-        nonlocal effective_max_workers
+        global last_log_time
+        nonlocal connection_errors, other_errors
+        error_class = None
         with shutdown_mode_on_error():
             result = future.result()
-
-            if shutdown_str:
-                return 0
 
             failed = result.failed
             redo = result.redo
             completed = result.completed
             error_class = result.error_class
 
-            # Rate limit and consecutive systematic/connection error tracking
-            if error_class == '429' and record_rate_limit():
-                old = effective_max_workers
-                effective_max_workers = max(1, min(len(in_flight), old-1))
-                if effective_max_workers < old:
-                    logging.warning(f"*** RATE LIMITED: max_workers capped {old} -> {effective_max_workers} ***")
-                elif effective_max_workers == 1:
-                    consecutive_errors += 1
-            elif error_class is None:
-                consecutive_errors = 0
-            elif error_class != '429':
-                consecutive_errors += 1
+            if error_class == 'connection':
+                connection_errors += 1
+            elif error_class == 'other':
+                connection_errors += 1
+                other_errors += 1
+            elif error_class == 'model':
+                other_errors += 1
 
             # Reset failure count for UIDs that succeeded
             for uid in completed:
@@ -273,8 +257,9 @@ def main(max_workers, batch_size, run_id):
                 else:
                     uids_str = ','.join(str(u) for u in sorted_uids)
                 logging.info(f"{model_alias}: SKIPPING {len(new_bad_uids)} UIDs (3+ consecutive failures): {uids_str}")
-                # reset consecutive_errors as the errors may of been due to specific UIDS.
-                consecutive_errors = 0
+                # adj other_errors as the errors may of been due to specific UIDS.
+                # allow it to be negative for now to prevent order dependency
+                other_errors -= 3
 
                 if run.dynamic:
                     with open_db('w', 'skipped uids') as conn:
@@ -286,10 +271,9 @@ def main(max_workers, batch_size, run_id):
                 run.push(*redo)
 
             last_log_time = None
-            return len(completed)
+            return len(completed), error_class
 
-        return 0
-
+        return 0, error_class
 
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -297,6 +281,7 @@ def main(max_workers, batch_size, run_id):
         while True:
             loop_start = time.time()
             completed = 0
+            status = set()
 
             # Process finished requests:
             if len(in_flight) >= effective_max_workers:
@@ -304,17 +289,34 @@ def main(max_workers, batch_size, run_id):
                 # At capacity: block until at least one request completes
                 done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
                 for f in done:
-                    completed += handle_result(f)
+                    num, err = handle_result(f)
+                    completed += num
+                    status.add(err)
             else:
                 # Poll for completed requests without blocking
                 for f in [f for f in in_flight if f.done()]:
                     in_flight.remove(f)
-                    completed += handle_result(f)
+                    num, err = handle_result(f)
+                    completed += num
+                    status.add(err)
+
+            uids_processed += completed
+                
+            # Error handling
+            backoff = status and ('429' in status or connection_errors >= 2)
+            if backoff and error_delay < 30:
+                error_delay *= 2
+            if status and not (status & {'429', 'connection', 'other'}):
+                error_delay = 1
+            if status and not (status & {'connection', 'other'}):
+                connection_errors = 0
+            if None in status or other_errors < 0:
+                other_errors = 0
 
             # Graceful shutdown
             if shutdown_requested:
                 enter_shutdown_mode("shutdown requested")
-            elif consecutive_errors >= 5:
+            elif other_errors >= 5:
                 enter_shutdown_mode("5 consecutive failures", "failure mode")
 
             # Incremental combine (dynamic mode)
@@ -325,6 +327,8 @@ def main(max_workers, batch_size, run_id):
             # Get next set of UIDs if needed
             if shutdown_str:
                 uids = []
+            elif backoff:
+                uids = None
             else:
                 threshold = (batch_size if ENABLE_REDO else
                              ceil(batch_size/2) if run.dynamic else
@@ -334,6 +338,16 @@ def main(max_workers, batch_size, run_id):
             # Break when done
             if not in_flight and uids == []:
                 break
+
+            # Rate Limited handling
+            if backoff and uids is None:
+                wait_time = error_delay + random.random() - 0.5
+                elapsed = time.time() - loop_start
+                reason = f"{connection_errors} connection errors" if connection_errors >= 2 else 'rate limited'
+                logging.info(f"{shutdown_str}{run.run_id}/{model_alias}: {reason}, trying again in: {wait_time:.3f}s")
+                if elapsed < wait_time:
+                    time.sleep(wait_time - elapsed)
+                continue
 
             # Submit new work if any
             if uids:
@@ -350,10 +364,10 @@ def main(max_workers, batch_size, run_id):
                 logging.info(f"{run.run_id}/{model_alias}: waiting for other runs to finish")
                 last_log_time = time.time()
 
-            # Ensure at least 2 seconds between loop iterations
+            # Ensure at least interval (defaults 2) seconds between loop iterations
             elapsed = time.time() - loop_start
-            if elapsed < 2:
-                time.sleep(2 - elapsed)
+            if elapsed < interval:
+                time.sleep(interval - elapsed)
 
     if shutdown_str:
         if abort_event.is_set():
@@ -365,7 +379,7 @@ def main(max_workers, batch_size, run_id):
     else:
         exit_code = 0
 
-    logging.info(f"*** RUN {STATE_NAMES[exit_code]} ***: {run.run_id}/{model_alias}: skipped {len(bad_uids)} UIDs")
+    logging.info(f"*** RUN {STATE_NAMES[exit_code]} ***: {run.run_id}/{model_alias}: processed {uids_processed} total UIDs; skipped {len(bad_uids)} UIDs")
     return exit_code
 
 if __name__ == '__main__':

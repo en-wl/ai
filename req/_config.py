@@ -147,7 +147,7 @@ def open_db(mode='r', desc = None, timeout = 5000):
         conn = sqlite3.connect(f'file:{db_file}?mode=ro', uri=True, isolation_level=None)
     else:
         conn = sqlite3.connect(db_file, isolation_level=None)
-    conn.execute(f'PRAGMA busy_timeout = {timeout}') 
+    conn.execute(f'PRAGMA busy_timeout = {timeout}')
     conn.execute('PRAGMA temp_store = MEMORY')
     conn.execute('PRAGMA synchronous = normal')
     conn.row_factory = sqlite3.Row

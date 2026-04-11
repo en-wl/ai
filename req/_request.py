@@ -268,10 +268,9 @@ def process_llm_response(content, expected_uids, input_data):
     return res, failed, redo
 
 
-# Rate limit: 429
 # Standard server errors: 500, 502, 503, 504
 # Cloudflare errors: 520, 521, 522, 524
-status_codes_to_retry = [429, 500, 502, 503, 504, 520, 521, 522, 524]
+status_codes_to_retry = [500, 502, 503, 504, 520, 521, 522, 524]
 retry_strategy = RetryNoTimeout(
     total=3,
     backoff_factor=0.25,
@@ -380,6 +379,7 @@ def send_request(run, model_alias, seq_id, uids):
 
     data = {}
     resp = None
+    have_data = False
     send_time = time.time()
     try:
         resp = http_session.post(url, headers=headers, json=payload, timeout=timeout, stream=True)
@@ -392,6 +392,7 @@ def send_request(run, model_alias, seq_id, uids):
                 if now - last_data_time > timeout:
                     raise requests.exceptions.Timeout(f"No data received for {timeout}s")
                 continue
+            
             data_str = line[6:]
             if data_str == '[DONE]':
                 break
@@ -410,6 +411,7 @@ def send_request(run, model_alias, seq_id, uids):
 
             if chunk['choices']:
                 choice_data = chunk['choices'][0]
+                have_data = True
             else:
                 choice_data = {}
 
@@ -432,6 +434,7 @@ def send_request(run, model_alias, seq_id, uids):
 
             usage = chunk.get('usage', None)
             if usage is not None:
+                have_data = True
                 last_data_time = now
                 data['usage'] = usage
 
@@ -454,16 +457,20 @@ def send_request(run, model_alias, seq_id, uids):
             data = {"error": error_msg,
                     "status_code": resp.status_code,
                     "reason": resp.reason,
+                    "headers": {k:v for k,v in resp.headers.items()},
                     "body": resp.text}
     except (requests.exceptions.Timeout, urllib3.exceptions.TimeoutError) as e:
         error_msg = f"{type(e).__name__}: {e}"
-        error_class = 'connection'
         data['error'] = error_msg
     except Exception as e:
         logging.exception(e)
         error_msg = f"{type(e).__name__}: {e}"
-        error_class = 'connection'
         data["error"] = error_msg
+    if error_msg and not error_class:
+        if have_data:
+            error_class = 'other'
+        else:
+            error_class = 'connection'
 
     try:
         content = data["choices"][0]["message"]["content"] or '' # to guard against None value
