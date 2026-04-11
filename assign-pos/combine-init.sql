@@ -19,7 +19,8 @@ create table adj_results_by_model (
   req_id integer not null,
   row_id integer not null,
   pos text,
-  pos_class text
+  pos_class text,
+  obscure integer check (obscure in (0, 1))
 );
 
 create index adj_results_by_model_uid on adj_results_by_model(uid);
@@ -30,7 +31,8 @@ create table adj_results (
   req_id integer not null,
   row_id integer not null,
   pos text,
-  pos_class text
+  pos_class text,
+  obscure integer check (obscure in (0, 1))
 );
 
 create index adj_results_uid on adj_results(uid);
@@ -41,6 +43,7 @@ create table pos_class_cnts_by_model (
   pos text not null,
   pos_class text not null,
   cnt integer not null,
+  obscure real not null,
   total integer not null,
   primary key (uid, model, pos, pos_class)
 ) without rowid;
@@ -50,6 +53,7 @@ create table pos_cnts_by_model (
   model text not null,
   pos text not null,
   cnt integer not null,
+  obscure real not null,
   total integer not null,
   primary key (uid, model, pos)
 ) without rowid;
@@ -71,6 +75,7 @@ create table pos_class_cnts (
   pos_class text not null,
   cnt integer not null,
   cnt_w real not null,
+  obscure real not null,
   total integer not null,
   primary key (uid, pos, pos_class)
 ) without rowid;
@@ -80,6 +85,7 @@ create table pos_cnts (
   pos text not null,
   cnt integer not null,
   cnt_w real not null,
+  obscure real not null,
   total integer not null,
   primary key (uid, pos)
 ) without rowid;

@@ -22,12 +22,13 @@ def pos_class_cnts_by_model_query(filter_clause=None):
      group by uid, model
   ),
   bucket_counts as (
-    select uid, model, pos, pos_class, count(distinct req_id) as cnt
+    select uid, model, pos, pos_class, count(distinct req_id) as cnt,
+           1.0 * count(distinct case when obscure then req_id end) / count(distinct req_id) as obscure
       from adj_results_by_model
      where pos is not null and {filter_clause}
      group by uid, model, pos, pos_class
   )
-select b.uid, b.model, b.pos, b.pos_class, b.cnt, t.total
+select b.uid, b.model, b.pos, b.pos_class, b.cnt, b.obscure, t.total
   from bucket_counts as b
   join totals as t using (uid, model)"""
 
@@ -43,12 +44,13 @@ def pos_cnts_by_model_query(filter_clause=None):
      group by uid, model
   ),
   pos_counts as (
-    select uid, model, pos, count(distinct req_id) as cnt
+    select uid, model, pos, count(distinct req_id) as cnt,
+           1.0 * count(distinct case when obscure then req_id end) / count(distinct req_id) as obscure
       from adj_results_by_model
      where pos is not null and {filter_clause}
      group by uid, model, pos
   )
-select p.uid, p.model, p.pos, p.cnt, t.total
+select p.uid, p.model, p.pos, p.cnt, p.obscure, t.total
   from pos_counts as p
   join totals as t using (uid, model)"""
 
@@ -86,7 +88,8 @@ def pos_class_cnts_query(filter_clause=None):
      group by uid, model
   ),
   bucket_model_counts as (
-    select uid, model, pos, pos_class, count(distinct req_id) as cnt
+    select uid, model, pos, pos_class, count(distinct req_id) as cnt,
+           1.0 * count(distinct case when obscure then req_id end) / count(distinct req_id) as obscure
       from adj_results
      where pos is not null and {filter_clause}
      group by uid, model, pos, pos_class
@@ -96,12 +99,13 @@ def pos_class_cnts_query(filter_clause=None):
            b.pos,
            b.pos_class,
            sum(case when b.cnt = t.total then 1 else 0 end) as cnt,
-           sum(1.0 * b.cnt / t.total) as cnt_w
+           sum(1.0 * b.cnt / t.total) as cnt_w,
+           avg(b.obscure) as obscure
       from bucket_model_counts as b
       join model_totals as t using (uid, model)
      group by b.uid, b.pos, b.pos_class
   )
-select e.uid, e.pos, e.pos_class, e.cnt, e.cnt_w, t.total
+select e.uid, e.pos, e.pos_class, e.cnt, e.cnt_w, e.obscure, t.total
   from exact_counts as e
   join (
     select uid, count(*) as total
@@ -121,7 +125,8 @@ def pos_cnts_query(filter_clause=None):
      group by uid, model
   ),
   pos_model_counts as (
-    select uid, model, pos, count(distinct req_id) as cnt
+    select uid, model, pos, count(distinct req_id) as cnt,
+           1.0 * count(distinct case when obscure then req_id end) / count(distinct req_id) as obscure
       from adj_results
      where pos is not null and {filter_clause}
      group by uid, model, pos
@@ -130,12 +135,13 @@ def pos_cnts_query(filter_clause=None):
     select p.uid,
            p.pos,
            sum(case when p.cnt = t.total then 1 else 0 end) as cnt,
-           sum(1.0 * p.cnt / t.total) as cnt_w
+           sum(1.0 * p.cnt / t.total) as cnt_w,
+           avg(p.obscure) as obscure
       from pos_model_counts as p
       join model_totals as t using (uid, model)
      group by p.uid, p.pos
   )
-select p.uid, p.pos, p.cnt, p.cnt_w, t.total
+select p.uid, p.pos, p.cnt, p.cnt_w, p.obscure, t.total
   from pos_counts as p
   join (
     select uid, count(*) as total
@@ -304,8 +310,8 @@ def update_model_data(conn, uid, model, input_row, results_rows):
     for r in results_rows:
         if should_filter(input_row, r):
             conn.execute(
-                "insert into adj_results_by_model values (?,?,?,?,?,?)",
-                (uid, model, r['req_id'], r['row_id'], None, None))
+                "insert into adj_results_by_model values (?,?,?,?,?,?,?)",
+                (uid, model, r['req_id'], r['row_id'], None, None, None))
             continue
 
         data[(r['pos'], r['pos_class'])].add_row(r)
@@ -317,10 +323,11 @@ def update_model_data(conn, uid, model, input_row, results_rows):
 
     for (pos, pos_class), d in data.items():
         conn.executemany(
-            "insert into adj_results_by_model values (?,?,?,?,?,?)",
-            ((uid, model, row['req_id'], row['row_id'], pos, pos_class)
+            "insert into adj_results_by_model values (?,?,?,?,?,?,?)",
+            ((uid, model, row['req_id'], row['row_id'], pos, pos_class,
+              1 if 'Obscure!' in (row['notes'] or '') else 0)
              for row in d.rows))
-        
+
 def update_combined_data(conn, uid):
     filter_clause = 'true'
     if FINAL_MODELS is not None:
@@ -329,8 +336,8 @@ def update_combined_data(conn, uid):
     for row in conn.execute(f"select * from adj_results_by_model where uid = ? and {filter_clause}", (uid,)):
         if row['pos'] is None:
             conn.execute(
-                "insert into adj_results values (?,?,?,?,?,?)",
-                (uid, row['model'], row['req_id'], row['row_id'], None, None))
+                "insert into adj_results values (?,?,?,?,?,?,?)",
+                (uid, row['model'], row['req_id'], row['row_id'], None, None, None))
         else:
             rows.append(row)
     if not rows:
@@ -373,8 +380,9 @@ def update_combined_data(conn, uid):
 
     for (pos, pos_class), d in data.items():
         conn.executemany(
-            "insert into adj_results values (?,?,?,?,?,?)",
-            ((uid, row['model'], row['req_id'], row['row_id'], pos, pos_class)
+            "insert into adj_results values (?,?,?,?,?,?,?)",
+            ((uid, row['model'], row['req_id'], row['row_id'], pos, pos_class,
+              row['obscure'])
              for row in d.rows))
 
 

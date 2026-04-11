@@ -14,10 +14,10 @@ with
                     then 1
                     else 0 end,
                case when reqs_cnt < 5
-                    and uid in (select uid from pos_class_cnts_by_model where cnt != total and model = :model group by uid)
+                    and uid in (select uid from pos_class_cnts_by_model where (cnt != total or obscure > 0) and model = :model group by uid)
                 then 5-reqs_cnt
                 when reqs_cnt < 3
-                 and uid in (select uid from pos_class_cnts where cnt != total)
+                 and uid in (select uid from pos_class_cnts where (cnt != total or obscure > 0))
                 then 3-reqs_cnt
                 else 0 end) as num
       from cnts)
