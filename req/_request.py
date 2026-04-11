@@ -327,20 +327,22 @@ def send_request(run, model_alias, seq_id, uids):
 
     model = models_config[model_alias]
     model_id = model['name']
+    provider_name = model.get('provider')
+    p = providers[provider_name]
 
     rows_content = ''.join(f'{run.input_strings[uid]}\n' for uid in uids if uid in run.input_strings)
     data = f"{run.header}\n{rows_content}"
     payload = {
         "model": model_id,
         "stream": True,
-        "provider": {
-            "only": model['providers']
-        },
         "messages": [
             {"role": "system", "content": model_specific_instructions(model)},
             {"role": "user", "content": data},
         ],
     }
+
+    if provider_name is None:
+        payload["provider"] = {"only": model['providers']}
 
     if temp_override is not None:
        payload['temperature'] = temp_override
@@ -351,11 +353,14 @@ def send_request(run, model_alias, seq_id, uids):
 
     reasoning = model.get('reasoning', None)
     if reasoning is not None:
-        payload["reasoning"] = {
-            "effort": reasoning,
-            "summary": "concise",
-            #"max_tokens": 4000,
-        }
+        if provider_name is None:
+            payload["reasoning"] = {
+                "effort": reasoning,
+                "summary": "concise",
+                #"max_tokens": 4000,
+            }
+        else:
+            payload["reasoning_effort"] = reasoning
 
     max_output = model.get('max_output', None)
     if max_output is not None:
@@ -382,7 +387,7 @@ def send_request(run, model_alias, seq_id, uids):
     have_data = False
     send_time = time.time()
     try:
-        resp = http_session.post(url, headers=headers, json=payload, timeout=timeout, stream=True)
+        resp = http_session.post(p['url'], headers=p['headers'], json=payload, timeout=timeout, stream=True)
         resp.raise_for_status()
         last_data_time = time.time()
         for raw in resp.iter_lines():
@@ -494,8 +499,8 @@ def send_request(run, model_alias, seq_id, uids):
                 req_id = cur.lastrowid
 
                 conn.execute(
-                    "INSERT INTO raw_data (req_id, request, response) VALUES (?, ?, ?)",
-                    (req_id, json.dumps(payload), json.dumps(data))
+                    "INSERT INTO raw_data (req_id, run_id, request, response) VALUES (?, ?, ?, ?)",
+                    (req_id, run.run_id, json.dumps(payload), json.dumps(data))
                 )
 
                 constraint_failed = store_parse_result(conn, req_id, run.run_id, parsed_result)

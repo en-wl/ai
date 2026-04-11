@@ -23,6 +23,7 @@ pre_run = None     # list of args for subprocess (run once before children start
 post_run = None    # list of args for subprocess (run once after children finish)
 
 key_file = 'key.txt'
+deepinfra_key_file = '~/wordlist/keys/deepinfra.txt'
 x_title = None  # required — config must set this
 http_referer = 'https://github.com/en-wl/wordlist'
 
@@ -57,7 +58,8 @@ models_config = {
     },
     "gpt-oss-120b": {
         "name": "openai/gpt-oss-120b",
-        "providers": ["deepinfra/bf16"], # [], # "chutes/bf16"
+        "provider": "deepinfra",
+        #"providers": ["deepinfra/bf16"], # [], # "chutes/bf16"
         "reasoning": "medium",
         "batch_size": 100,
     },
@@ -70,8 +72,9 @@ models_config = {
         "special": "After the Notes section, output the exact text `<<<END>>>` on its own line, then stop.",
     },
     "gemma-4-31b": {
-        "name": "google/gemma-4-31b-it",
-        "providers": ["parasail/bf16", "akashml/bf16", "venice/bf16"],
+        "name": "google/gemma-4-31B-it",
+        "provider": "deepinfra",
+        #"providers": ["parasail/bf16", "akashml/bf16", "venice/bf16"],
         "reasoning": "low",
         "batch_size": 100,
     },
@@ -79,7 +82,7 @@ models_config = {
         "name": "x-ai/grok-4.1-fast",
         "providers": ["xai"],
         "reasoning": "low",
-        "batch_size": 200,
+        "batch_size": 100,
     },
     "deepseek-v3.2": {
         "name": "deepseek/deepseek-v3.2",
@@ -204,13 +207,28 @@ if x_title is None:
     raise RuntimeError("x_title must be set in req-config.py")
 
 OPENROUTER_API_KEY = Path(key_file).read_text().rstrip()
-url = "https://openrouter.ai/api/v1/chat/completions"
-headers = {
-    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-    "Content-Type": "application/json",
-    "X-Title": x_title,
-    "HTTP-Referer": http_referer,
+
+providers = {
+    None: {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "headers": {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "X-Title": x_title,
+            "HTTP-Referer": http_referer,
+        },
+    },
 }
+
+if any(m.get('provider') == 'deepinfra' for m in models_config.values()):
+    _deepinfra_key = Path(os.path.expanduser(deepinfra_key_file)).read_text().rstrip()
+    providers['deepinfra'] = {
+        "url": "https://api.deepinfra.com/v1/openai/chat/completions",
+        "headers": {
+            "Authorization": f"Bearer {_deepinfra_key}",
+            "Content-Type": "application/json",
+        },
+    }
 
 def _resolve_file(name):
     p = Path(name)

@@ -63,12 +63,13 @@ class BatchSession:
         model_config = models_config[model_alias]
         temperature = model_config.get('temperature', 1) if temp_override is None else temp_override
         reasoning = model_config.get('reasoning', 'n/a')
+        provider = model_config.get('provider')
 
         with open_db('w', 'batch init') as conn:
             conn.execute(
-                """INSERT INTO runs (run_id, model, start_time, batch_size, temperature, reasoning_effort, sample_type)
-                   VALUES (?, ?, (julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, 'random')""",
-                (run_id, model_alias, self.batch_size, temperature, reasoning)
+                """INSERT INTO runs (run_id, model, provider, start_time, batch_size, temperature, reasoning_effort, sample_type)
+                   VALUES (?, ?, ?, (julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, 'random')""",
+                (run_id, model_alias, provider, self.batch_size, temperature, reasoning)
             )
 
     @property

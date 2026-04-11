@@ -11,13 +11,13 @@ select model, e.* from errors as e join requests using (req_id) join runs using 
 
 drop view if exists request_cost;
 create view request_cost as
-select req_id, entry_time, send_time,
+select rd.req_id, entry_time, send_time,
        entry_time - send_time as elapsed_secs,
-       run_id,
+       rd.run_id,
        batch_size as input_uids,
        error is null as success,
        json_extract(response, '$.usage.cost') as usage_cost
-from raw_data
+from raw_data as rd
 join requests using (req_id);
 select * from request_cost limit 0;
 

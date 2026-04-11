@@ -16,6 +16,7 @@ create table if not exists errors (
 create table if not exists runs (
   run_id integer primary key,
   model text not null,
+  provider text, -- null if request went through openrouter
   start_time real not null, -- unix timestamp with subsecond precision
   batch_size integer not null,
   temperature real not null,
@@ -35,11 +36,10 @@ create table if not exists requests (
 
 create table if not exists raw_data (
   req_id integer primary key,
+  run_id integer not null,
   request text,
   response text
 );
-
-begin;
 
 drop table if exists outstanding_runs;
 create table outstanding_runs (
@@ -68,8 +68,6 @@ create table completed_reqs (
   run_id integer not null,
   primary key (run_id, uid)
 ) without rowid;
-
-commit;
 
 create table if not exists skipped_uids (
   uid integer not null,
