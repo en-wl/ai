@@ -121,8 +121,8 @@ def pos_class_cnts_query(filter_clause=None):
            b.pos,
            b.pos_class,
            sum(case when b.cnt = t.total then 1 else 0 end) as cnt,
-           sum(1.0 * b.cnt / t.total) as cnt_w,
-           avg(b.obscure) as obscure
+           round(sum(1.0 * b.cnt / t.total), 3) as cnt_w,
+           round(avg(b.obscure), 4) as obscure
       from bucket_model_counts as b
       join model_totals as t using (uid, model)
      group by b.uid, b.pos, b.pos_class
@@ -157,8 +157,8 @@ def pos_cnts_query(filter_clause=None):
     select p.uid,
            p.pos,
            sum(case when p.cnt = t.total then 1 else 0 end) as cnt,
-           sum(1.0 * p.cnt / t.total) as cnt_w,
-           avg(p.obscure) as obscure
+           round(sum(1.0 * p.cnt / t.total), 3) as cnt_w,
+           round(avg(p.obscure), 4) as obscure
       from pos_model_counts as p
       join model_totals as t using (uid, model)
      group by p.uid, p.pos
@@ -193,8 +193,8 @@ def class_cnts_query(filter_clause=None):
     select c.uid,
            c.pos_class,
            sum(case when c.cnt = t.total then 1 else 0 end) as cnt,
-           sum(1.0 * c.cnt / t.total) as cnt_w,
-           avg(c.obscure) as obscure
+           round(sum(1.0 * c.cnt / t.total), 3) as cnt_w,
+           round(avg(c.obscure), 4) as obscure
       from class_model_counts as c
       join model_totals as t using (uid, model)
      group by c.uid, c.pos_class
@@ -239,7 +239,7 @@ def lemma_cnts_query(filter_clause=None):
            l.pos_class,
            l.lemma,
            sum(case when l.lemma_cnt = b.bucket_cnt then 1 else 0 end) as cnt,
-           sum(1.0 * l.lemma_cnt / b.bucket_cnt) as cnt_w
+           round(sum(1.0 * l.lemma_cnt / b.bucket_cnt), 3) as cnt_w
       from lemma_model_counts as l
       join bucket_model_counts as b using (uid, model, pos, pos_class)
      group by l.uid, l.pos, l.pos_class, l.lemma
