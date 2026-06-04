@@ -197,9 +197,12 @@ def discover_columns():
 
     return input_cols, result_data_cols, results_all_cols, results_types
 
-input_cols, result_data_cols, results_all_cols, results_types = discover_columns()
-result_col_idx = {col: i for i, col in enumerate(result_data_cols)}
-results_insert_sql = f"INSERT INTO results ({', '.join(results_all_cols)}) VALUES ({', '.join('?' for _ in results_all_cols)})"
+try:
+    input_cols, result_data_cols, results_all_cols, results_types = discover_columns()
+    result_col_idx = {col: i for i, col in enumerate(result_data_cols)}
+    results_insert_sql = f"INSERT INTO results ({', '.join(results_all_cols)}) VALUES ({', '.join('?' for _ in results_all_cols)})"
+except Exception:
+    pass
 
 # === API setup ===
 

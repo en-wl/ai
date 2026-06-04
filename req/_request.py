@@ -30,13 +30,22 @@ class RetryNoTimeout(Retry):
         return super().increment(method=method, url=url, response=response,
                                  error=error, **kwargs)
 
+@dataclass(slots = True)
+class PromptResult:
+    payload: dict
+    send_time: float
+    data: dict = field(default_factory=dict)
+    content: str = ''
+    error_class: str = None
+    error_msg: str = None
+
 class RequestResult(NamedTuple):
     failed: set = frozenset()
     redo: set = frozenset()
     completed: set = frozenset()
     error_class: str = None  # '429', 'connection', 'model', or None
 
-@dataclass
+@dataclass(slots = True)
 class ParseResult:
     rows: list = field(default_factory=list)
     model_notes: str = None
@@ -69,9 +78,188 @@ class Row(tuple):
             items[self._idx[k]] = v
         return type(self)(items)
 
-Row._fields = tuple(result_data_cols)
-Row._expected = len(result_data_cols)
-Row._idx = result_col_idx
+try:
+    Row._fields = tuple(result_data_cols)
+    Row._expected = len(result_data_cols)
+    Row._idx = result_col_idx
+except Exception:
+    pass
+
+# Standard server errors: 500, 502, 503, 504
+# Cloudflare errors: 520, 521, 522, 524
+status_codes_to_retry = [500, 502, 503, 504, 520, 521, 522, 524]
+retry_strategy = RetryNoTimeout(
+    total=3,
+    backoff_factor=0.25,
+    status_forcelist=status_codes_to_retry,
+    allowed_methods=["POST"],
+    raise_on_status=False,
+)
+
+def model_specific_instructions(model):
+    special = model.get('special', None)
+    if special is None:
+        return instructions
+    return f"""{instructions}
+
+## Special Instructions
+
+{model['special']}
+"""
+
+def send_prompt(model_alias, prompt):
+    model = models_config[model_alias]
+    model_id = model['name']
+    provider_name = model.get('provider')
+    p = providers[provider_name]
+
+    payload = {
+        "model": model_id,
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": model_specific_instructions(model)},
+            {"role": "user", "content": prompt},
+        ],
+    }
+
+    if provider_name is None:
+        payload["provider"] = {"only": model['providers']}
+
+    if temp_override is not None:
+       payload['temperature'] = temp_override
+    elif 'temperature' in model:
+       payload['temperature'] = model['temperature']
+       if 'top_p' in model:
+           payload['top_p'] = model['top_p']
+
+    reasoning = model.get('reasoning', None)
+    if reasoning is not None:
+        if provider_name is None:
+            payload["reasoning"] = {
+                "effort": reasoning,
+                "summary": "concise",
+                #"max_tokens": 4000,
+            }
+        else:
+            payload["reasoning_effort"] = reasoning
+
+    max_output = model.get('max_output', None)
+    if max_output is not None:
+        payload['max_output'] = max_output
+
+    stop_text = model.get("stop", None)
+    if stop_text is not None:
+        payload['stop'] = stop_text
+
+    adapter = HTTPAdapter(
+        max_retries=retry_strategy,
+    )
+    http_session = requests.Session()
+    http_session.mount("https://", adapter)
+
+    cfg = models_config[model_alias]
+    timeout = cfg.get('timeout', 30)
+
+    resp = None
+    have_data = False
+    r = PromptResult(payload, time.time())
+    try:
+        resp = http_session.post(p['url'], headers=p['headers'], json=payload, timeout=timeout, stream=True)
+        resp.raise_for_status()
+        last_data_time = time.time()
+        for raw in resp.iter_lines():
+            line = raw.decode('utf-8')
+            now = time.time()
+            if not line.startswith('data: '):
+                if now - last_data_time > timeout:
+                    raise requests.exceptions.Timeout(f"No data received for {timeout}s")
+                continue
+            
+            data_str = line[6:]
+            if data_str == '[DONE]':
+                break
+
+            chunk = json.loads(data_str)
+            if not r.data:
+                last_data_time = now
+                r.data = chunk.copy()
+                r.data['object'] = 'reconstructed'
+                message = {
+                    'content': ''
+                }
+                r.data['choices'] = [{
+                    'message': message
+                }]
+
+            if chunk['choices']:
+                choice_data = chunk['choices'][0]
+                have_data = True
+            else:
+                choice_data = {}
+
+            for key, value in choice_data.get('delta', {}).items():
+                if key in ('content', 'reasoning', 'reasoning_content') and value:
+                    last_data_time = now
+                    message[key] = message.get(key, '') + value
+                elif key in ('reasoning_details'):
+                    # fixme: merge
+                    pass
+
+            if choice_data.get('finish_reason', None) is not None:
+                r.data['choices'][0]['finish_reason'] = choice_data['finish_reason']
+                r.data['choices'][0]['native_finish_reason'] = choice_data.get('native_finish_reason', None)
+
+            error = chunk.get('error', None)
+            if error:
+                r.error_msg = error.get('message', str(error))
+                r.data['error'] = error
+
+            usage = chunk.get('usage', None)
+            if usage is not None:
+                have_data = True
+                last_data_time = now
+                r.data['usage'] = usage
+
+            if now - last_data_time > timeout:
+                raise requests.exceptions.Timeout(f"No data received for {timeout}s")
+
+            if abort_event.is_set():
+                # logging.info(f"aborting: {run.run_id}/{model_alias} #{seq_id}")
+                break
+
+    except requests.HTTPError as e:
+        r.error_msg = f"{type(e).__name__}: {e}"
+        r.error_class = 'connection'
+        if e.response is None:
+            r.data = {"error": r.error_msg}
+        else:
+            resp = e.response
+            if resp.status_code == 429:
+                r.error_class = '429'
+            r.data = {"error": r.error_msg,
+                    "status_code": resp.status_code,
+                    "reason": resp.reason,
+                    "headers": {k:v for k,v in resp.headers.items()},
+                    "body": resp.text}
+    except (requests.exceptions.Timeout, urllib3.exceptions.TimeoutError) as e:
+        r.error_msg = f"{type(e).__name__}: {e}"
+        r.data['error'] = r.error_msg
+    except Exception as e:
+        logging.exception(e)
+        r.error_msg = f"{type(e).__name__}: {e}"
+        r.data["error"] = r.error_msg
+    if r.error_msg and not r.error_class:
+        if have_data:
+            r.error_class = 'other'
+        else:
+            r.error_class = 'connection'
+
+    try:
+        r.content = r.data["choices"][0]["message"]["content"] or '' # to guard against None value
+    except (KeyError, IndexError, TypeError):
+        pass
+
+    return r
 
 def process_llm_response(content, expected_uids, input_data):
     lines = content.splitlines()
@@ -268,28 +456,6 @@ def process_llm_response(content, expected_uids, input_data):
     return res, failed, redo
 
 
-# Standard server errors: 500, 502, 503, 504
-# Cloudflare errors: 520, 521, 522, 524
-status_codes_to_retry = [500, 502, 503, 504, 520, 521, 522, 524]
-retry_strategy = RetryNoTimeout(
-    total=3,
-    backoff_factor=0.25,
-    status_forcelist=status_codes_to_retry,
-    allowed_methods=["POST"],
-    raise_on_status=False,
-)
-
-def model_specific_instructions(model):
-    special = model.get('special', None)
-    if special is None:
-        return instructions
-    return f"""{instructions}
-
-## Special Instructions
-
-{model['special']}
-"""
-
 def store_parse_result(conn, req_id, run_id, parsed_result):
     """Insert parsed rows into results table and errors into errors table.
     Returns set of UIDs that failed due to constraint violations."""
@@ -325,169 +491,17 @@ def send_request(run, model_alias, seq_id, uids):
     if not uids:
         return RequestResult()
 
-    model = models_config[model_alias]
-    model_id = model['name']
-    provider_name = model.get('provider')
-    p = providers[provider_name]
-
     rows_content = ''.join(f'{run.input_strings[uid]}\n' for uid in uids if uid in run.input_strings)
-    data = f"{run.header}\n{rows_content}"
-    payload = {
-        "model": model_id,
-        "stream": True,
-        "messages": [
-            {"role": "system", "content": model_specific_instructions(model)},
-            {"role": "user", "content": data},
-        ],
-    }
+    prompt = f"{run.header}\n{rows_content}"
+    
+    result = send_prompt(model_alias, prompt)
 
-    if provider_name is None:
-        payload["provider"] = {"only": model['providers']}
+    parsed_result, failed, redo = process_llm_response(result.content, uids, run.input_data)
 
-    if temp_override is not None:
-       payload['temperature'] = temp_override
-    elif 'temperature' in model:
-       payload['temperature'] = model['temperature']
-       if 'top_p' in model:
-           payload['top_p'] = model['top_p']
-
-    reasoning = model.get('reasoning', None)
-    if reasoning is not None:
-        if provider_name is None:
-            payload["reasoning"] = {
-                "effort": reasoning,
-                "summary": "concise",
-                #"max_tokens": 4000,
-            }
-        else:
-            payload["reasoning_effort"] = reasoning
-
-    max_output = model.get('max_output', None)
-    if max_output is not None:
-        payload['max_output'] = max_output
-
-    stop_text = model.get("stop", None)
-    if stop_text is not None:
-        payload['stop'] = stop_text
-
-    parsed_result = ParseResult()
-    error_msg = None
-    error_class = None
-    adapter = HTTPAdapter(
-        max_retries=retry_strategy,
-    )
-    http_session = requests.Session()
-    http_session.mount("https://", adapter)
-
-    cfg = models_config[model_alias]
-    timeout = cfg.get('timeout', 30)
-
-    data = {}
-    resp = None
-    have_data = False
-    send_time = time.time()
-    try:
-        resp = http_session.post(p['url'], headers=p['headers'], json=payload, timeout=timeout, stream=True)
-        resp.raise_for_status()
-        last_data_time = time.time()
-        for raw in resp.iter_lines():
-            line = raw.decode('utf-8')
-            now = time.time()
-            if not line.startswith('data: '):
-                if now - last_data_time > timeout:
-                    raise requests.exceptions.Timeout(f"No data received for {timeout}s")
-                continue
-            
-            data_str = line[6:]
-            if data_str == '[DONE]':
-                break
-
-            chunk = json.loads(data_str)
-            if not data:
-                last_data_time = now
-                data = chunk.copy()
-                data['object'] = 'reconstructed'
-                message = {
-                    'content': ''
-                }
-                data['choices'] = [{
-                    'message': message
-                }]
-
-            if chunk['choices']:
-                choice_data = chunk['choices'][0]
-                have_data = True
-            else:
-                choice_data = {}
-
-            for key, value in choice_data.get('delta', {}).items():
-                if key in ('content', 'reasoning') and value:
-                    last_data_time = now
-                    message[key] = message.get(key, '') + value
-                elif key in ('reasoning_details'):
-                    # fixme: merge
-                    pass
-
-            if choice_data.get('finish_reason', None) is not None:
-                data['choices'][0]['finish_reason'] = choice_data['finish_reason']
-                data['choices'][0]['native_finish_reason'] = choice_data.get('native_finish_reason', None)
-
-            error = chunk.get('error', None)
-            if error:
-                error_msg = error.get('message', str(error))
-                data['error'] = error
-
-            usage = chunk.get('usage', None)
-            if usage is not None:
-                have_data = True
-                last_data_time = now
-                data['usage'] = usage
-
-            if now - last_data_time > timeout:
-                raise requests.exceptions.Timeout(f"No data received for {timeout}s")
-
-            if abort_event.is_set():
-                logging.info(f"aborting: {run.run_id}/{model_alias} #{seq_id}")
-                break
-
-    except requests.HTTPError as e:
-        error_msg = f"{type(e).__name__}: {e}"
-        error_class = 'connection'
-        if e.response is None:
-            data = {"error": error_msg}
-        else:
-            resp = e.response
-            if resp.status_code == 429:
-                error_class = '429'
-            data = {"error": error_msg,
-                    "status_code": resp.status_code,
-                    "reason": resp.reason,
-                    "headers": {k:v for k,v in resp.headers.items()},
-                    "body": resp.text}
-    except (requests.exceptions.Timeout, urllib3.exceptions.TimeoutError) as e:
-        error_msg = f"{type(e).__name__}: {e}"
-        data['error'] = error_msg
-    except Exception as e:
-        logging.exception(e)
-        error_msg = f"{type(e).__name__}: {e}"
-        data["error"] = error_msg
-    if error_msg and not error_class:
-        if have_data:
-            error_class = 'other'
-        else:
-            error_class = 'connection'
-
-    try:
-        content = data["choices"][0]["message"]["content"] or '' # to guard against None value
-    except (KeyError, IndexError, TypeError):
-        content = ''
-
-    parsed_result, failed, redo = process_llm_response(content, uids, run.input_data)
-
-    if not parsed_result.rows and error_msg is None:
+    if not parsed_result.rows and result.error_msg is None:
         error_code = parsed_result.errors[-1]['error_code'] if parsed_result.errors else "UNKNOWN"
-        error_msg = f"No Results: {error_code}"
-        error_class = 'model'
+        result.error_msg = f"No Results: {error_code}"
+        result.error_class = 'model'
 
     while True:
         try:
@@ -495,12 +509,12 @@ def send_request(run, model_alias, seq_id, uids):
                 cur = conn.execute(
                     """INSERT INTO requests (entry_time, send_time, run_id, batch_size, error, model_notes)
                        VALUES ((julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, ?, ?)""",
-                    (send_time, run.run_id, len(uids), error_msg, parsed_result.model_notes))
+                    (result.send_time, run.run_id, len(uids), result.error_msg, parsed_result.model_notes))
                 req_id = cur.lastrowid
 
                 conn.execute(
                     "INSERT INTO raw_data (req_id, run_id, request, response) VALUES (?, ?, ?, ?)",
-                    (req_id, run.run_id, json.dumps(payload), json.dumps(data))
+                    (req_id, run.run_id, json.dumps(result.payload), json.dumps(result.data))
                 )
 
                 constraint_failed = store_parse_result(conn, req_id, run.run_id, parsed_result)
@@ -528,12 +542,12 @@ def send_request(run, model_alias, seq_id, uids):
 
     completed = set(row['uid'] for row in parsed_result.rows) - constraint_failed
 
-    if error_msg and len(error_msg) > 50:
-        error_msg = error_msg[0:49] + "…"
+    if result.error_msg and len(result.error_msg) > 50:
+        result.error_msg = result.error_msg[0:49] + "…"
 
-    prefix = f"FAILED: {error_msg}" if error_msg else "FINISHED"
+    prefix = f"FAILED: {result.error_msg}" if result.error_msg else "FINISHED"
     ok_cnt = len(completed)
     failed_cnt = len(failed)
     missing_cnt = len(redo - failed)
     logging.info(f"{prefix}: {run.run_id}/{model_alias} #{seq_id}; id: {req_id}; ok/err/…: {ok_cnt}/{failed_cnt}/{missing_cnt}")
-    return RequestResult(failed=failed, redo=redo, completed=completed, error_class=error_class)
+    return RequestResult(failed=failed, redo=redo, completed=completed, error_class=result.error_class)
