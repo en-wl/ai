@@ -13,7 +13,27 @@ from urllib3.util.retry import Retry
 
 from req._config import *
 
-abort_event = threading.Event()
+class Run:
+    def __init__(self, model_alias, batch_size, run_id = None):
+        self.model_alias = model_alias
+        self.run_id = run_id
+
+        self.batch_size = batch_size
+
+        model_config = models_config[model_alias]
+        temperature = model_config.get('temperature', 1) if temp_override is None else temp_override
+        reasoning = model_config.get('reasoning', 'n/a')
+        provider = model_config.get('provider')
+
+        with open_db('w', 'batch init') as conn:
+            cur = conn.execute(
+                """INSERT INTO runs (run_id, model, provider, start_time, batch_size, temperature, reasoning_effort, sample_type)
+                   VALUES (?, ?, ?, (julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, 'random')""",
+                (run_id, model_alias, provider, batch_size, temperature, reasoning)
+            )
+            if run_id is None:
+                self.run_id = cur.lastrowid
+
 
 # Thread safety: send_request() runs in a ThreadPoolExecutor from __main__.py,
 # so all code in this module must be safe for concurrent execution.  This works
@@ -21,6 +41,8 @@ abort_event = threading.Event()
 # config imported from _config.  The one shared mutable resource (the SQLite
 # database) is accessed through short-lived per-call connections, which SQLite
 # serializes internally.
+
+abort_event = threading.Event()
 
 class RetryNoTimeout(Retry):
     """Retry on status/connection errors but not on timeouts."""
@@ -38,52 +60,6 @@ class PromptResult:
     content: str = ''
     error_class: str = None
     error_msg: str = None
-
-class RequestResult(NamedTuple):
-    failed: set = frozenset()
-    redo: set = frozenset()
-    completed: set = frozenset()
-    error_class: str = None  # '429', 'connection', 'model', or None
-
-@dataclass(slots = True)
-class ParseResult:
-    rows: list = field(default_factory=list)
-    model_notes: str = None
-    errors: list = field(default_factory=list)
-
-class Row(tuple):
-    _fields = ()
-    _expected = 0
-    _idx = {}
-
-    def __new__(cls, cells):
-        return super().__new__(cls, cells)
-
-    @classmethod
-    def _make(cls, cells):
-        return super().__new__(cls, cells)
-
-    def __getattr__(self, name):
-        try:
-            return self[self._idx[name]]
-        except KeyError:
-            raise AttributeError(f"Row has no field '{name}'")
-
-    def _asdict(self):
-        return {f: self[i] for i, f in enumerate(self._fields) if i < len(self)}
-
-    def _replace(self, **kwargs):
-        items = list(self)
-        for k, v in kwargs.items():
-            items[self._idx[k]] = v
-        return type(self)(items)
-
-try:
-    Row._fields = tuple(result_data_cols)
-    Row._expected = len(result_data_cols)
-    Row._idx = result_col_idx
-except Exception:
-    pass
 
 # Standard server errors: 500, 502, 503, 504
 # Cloudflare errors: 520, 521, 522, 524
@@ -261,293 +237,50 @@ def send_prompt(model_alias, prompt):
 
     return r
 
-def process_llm_response(content, expected_uids, input_data):
-    lines = content.splitlines()
-    table_rows = defaultdict(list)
-    model_notes = []
-    errors = []
+class Request:
+    def __init__(self, run, seq_id, data):
+        self.run = run
+        self.model_alias = run.model_alias
+        self.seq_id = seq_id
+        self.data = data
 
-    # State flags
-    in_table = False
-    headers_found = False
+    def create_prompt(self):
+        return ''.join(f"{line}\n" for line in self.data)
 
-    # Regex to define a table row (starts and ends with |)
-    row_pattern = re.compile(r'^\s*\|.*\|\s*$')
-    seen = set() # duplicate input detection
+    def process_response(self, response):
+        return response, None
 
-    for line in lines:
+    def store_result(self, conn, req_id, response, processed):
+        return processed, None
 
-        # Check if the line looks like a table row
-        if row_pattern.match(line):
+    def batch_size(self):
+        return len(self.data)
 
-            # 1. Check for Separator Line (e.g., |---|---|)
-            # If found, we are definitely in a table.
-            if set(line) <= {'|', '-', ' ', ':'}:
-                in_table = True
-                headers_found = True
-                continue # Skip the separator line itself
+    def send(self):
+        prompt = self.create_prompt()
+        response = send_prompt(self.model_alias, prompt)
+        processed, model_notes = self.process_response(response)
 
-            # 2. Start Detection (if we aren't in a table yet)
-            if not in_table:
-                # We found a pipe-delimited line but haven't seen a separator yet.
-                # Determine if this is a Header or Data based on the first cell.
-                cells = [c.strip() for c in line.split('|')[1:-1]]
-
-                if cells:
-                    first_cell = cells[0]
-                    # If the first cell is a number, it's a Data Row (Header missing/skipped)
-                    if first_cell.isdigit():
-                        in_table = True
-                        headers_found = True
-                        # Do NOT continue; fall through to process this line as data
-                    else:
-                        # If not a number, assume it's a Header Row
-                        in_table = True
-                        headers_found = True
-                        continue # Skip the header line
-
-            # 3. Process Data Row
-            # We parse the row if we are in_table (and it wasn't a separator or header)
-            cells = Row(c.strip() for c in line.split('|')[1:-1])
-            if cells in seen:
-                continue # skip duplicate lines
-            seen.add(cells)
-
-            # Attempt to extract UID first
+        while True:
             try:
-                uid = int(cells[0])
-            except ValueError:
-                errors.append({
-                    'uid': None,
-                    'error_code': "INVALID_UID",
-                    'error_msg': f"Invalid UID str: {cells[0]}",
-                    'orig_line': line
-                })
-                continue
-            if uid not in expected_uids:
-                errors.append({
-                    'uid': None,
-                    'error_code': "UID_UNKNOWN",
-                    'error_msg': f"UID {uid} returned but not requested.",
-                    'orig_line': line,
-                })
-                continue
-
-            # Validate_row callback, called now to give it a chance to fix malformed rows;
-            # store error for later
-            validation_err = None
-            if validate_row is not None:
-                try:
-                    cells, validation_err = validate_row(cells, input_data[uid])
-                except IndexError:
-                    pass # fall through to MALFORMED_ROW check
-
-            # Check for malformed row
-            if len(cells) != cells._expected:
-                errors.append({
-                    'uid': uid,
-                    'error_code': "MALFORMED_ROW",
-                    'error_msg': f"Malformed row ({len(cells)} cols, expected {Row._expected})",
-                    'orig_line': line
-                })
-                continue
-
-            # The row is valid, report any errors from validation
-            if validation_err is not None:
-                errors.append({
-                    'uid': uid,
-                    'error_code': validation_err['error_code'],
-                    'error_msg': validation_err['error_msg'],
-                    'orig_line': line
-                })
-                continue
-
-            # Map cells to column names
-            row = cells._asdict()
-            row['uid'] = uid  # ensure uid is int
-
-            # Post-validation type fixes
-            try:
-                for col in result_data_cols:
-                    if col == 'uid':
-                        continue
-                    col_type = results_types.get(col, '')
-                    val = row[col]
-                    if col_type == 'INTEGER':
-                        row[col] = int(val)
-                    elif col_type == 'REAL':
-                        row[col] = float(val)
-            except (TypeError, ValueError):
-                errors.append({
-                    'uid': uid,
-                    'error_code': "INVALID_TYPE",
-                    'error_msg': f"Column '{col}' expected {col_type} but got: {val}",
-                    'orig_line': line
-                })
-                continue
-
-            row['orig_line'] = line
-            table_rows[uid].append(row)
-
-        else:
-            # Line does not match |...| pattern
-            if in_table:
-                # If we were in a table and hit a non-table line, the table is over.
-                in_table = False
-                model_notes.append(line)
-            elif headers_found:
-                # Notes after the table
-                model_notes.append(line)
-
-    if not headers_found:
-        errors.append({
-            'uid': None,
-            'error_code': "NO_TABLE",
-            'error_msg': "No table structure detected in response.",
-            'orig_line': None,
-        })
-
-    res = ParseResult(
-        rows=[],
-        model_notes="\n".join(model_notes).strip(),
-        errors=errors,
-    )
-
-    failed = set(e['uid'] for e in errors if e['uid'] is not None)
-    completed = set()
-    for uid, rows in table_rows.items():
-        if uid in failed:
-            continue
-        res.rows.extend(rows)
-        completed.add(uid)
-
-    good_rows = sum(len(rows) for rows in table_rows.values())
-    bad_rows = sum(1 for e in errors if e['orig_line'] is not None)
-
-    if good_rows == 0:
-        if not res.errors:
-            res.errors.append({
-                'uid': None,
-                'error_code': "NO_DATA",
-                'error_msg': "No data.",
-                'orig_line': None,
-            })
-        redo = set(expected_uids)
-    elif good_rows < 2 * bad_rows:
-        res.rows = []
-        res.errors.append({
-            'uid': None,
-            'error_code': "BAD_ROWS",
-            'error_msg': f"Too many bad rows ({bad_rows} bad vs {good_rows} good).",
-            'orig_line': None,
-        })
-        redo = set(expected_uids)
-    else:
-        redo = set(expected_uids) - completed
-        missing = redo - failed
-        if missing:
-            res.errors.append({
-                'uid': None,
-                'error_code': "MISSING_UIDS",
-                'error_msg': f"Missing {len(missing)}/{len(expected_uids)} UIDs.",
-                'orig_line': None,
-            })
-
-    return res, failed, redo
-
-
-def store_parse_result(conn, req_id, run_id, parsed_result):
-    """Insert parsed rows into results table and errors into errors table.
-    Returns set of UIDs that failed due to constraint violations."""
-    insert_errors = []
-    for row in parsed_result.rows:
-        values = tuple(
-            row.get(c, run_id if c == 'run_id' else req_id if c == 'req_id' else '')
-            for c in results_all_cols
-        )
-        try:
-            conn.execute(results_insert_sql, values)
-        except sqlite3.IntegrityError as e:
-            insert_errors.append({
-                'uid': row['uid'],
-                'error_code': 'CONSTRAINT_VIOLATION',
-                'error_msg': str(e),
-                'orig_line': row.get('orig_line'),
-            })
-    constraint_failed = set(e['uid'] for e in insert_errors)
-    conn.executemany("delete from results where req_id = ? and uid = ?",
-                     ((req_id, uid) for uid in constraint_failed))
-
-    conn.executemany(
-        """INSERT INTO errors (req_id, uid, error_code, error_msg, orig_line)
-            VALUES (?, ?, ?, ?, ?)""",
-        ((req_id, err['uid'], err['error_code'], err['error_msg'], err['orig_line'])
-         for err in [*parsed_result.errors, *insert_errors])
-    )
-    return constraint_failed
-
-
-def send_request(run, model_alias, seq_id, uids):
-    if not uids:
-        return RequestResult()
-
-    rows_content = ''.join(f'{run.input_strings[uid]}\n' for uid in uids if uid in run.input_strings)
-    prompt = f"{run.header}\n{rows_content}"
-    
-    result = send_prompt(model_alias, prompt)
-
-    parsed_result, failed, redo = process_llm_response(result.content, uids, run.input_data)
-
-    if not parsed_result.rows and result.error_msg is None:
-        error_code = parsed_result.errors[-1]['error_code'] if parsed_result.errors else "UNKNOWN"
-        result.error_msg = f"No Results: {error_code}"
-        result.error_class = 'model'
-
-    while True:
-        try:
-            with open_db('w', 'results') as conn:
-                cur = conn.execute(
-                    """INSERT INTO requests (entry_time, send_time, run_id, batch_size, error, model_notes)
-                       VALUES ((julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, ?, ?)""",
-                    (result.send_time, run.run_id, len(uids), result.error_msg, parsed_result.model_notes))
-                req_id = cur.lastrowid
-
-                conn.execute(
-                    "INSERT INTO raw_data (req_id, run_id, request, response) VALUES (?, ?, ?, ?)",
-                    (req_id, run.run_id, json.dumps(result.payload), json.dumps(result.data))
-                )
-
-                constraint_failed = store_parse_result(conn, req_id, run.run_id, parsed_result)
-
-                if DYNAMIC_MODE:
+                with open_db('w', 'results') as conn:
+                    cur = conn.execute(
+                        """INSERT INTO requests (entry_time, send_time, run_id, batch_size, error, model_notes)
+                           VALUES ((julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, ?, ?)""",
+                        (response.send_time, self.run.run_id, self.batch_size(),
+                         response.error_msg, model_notes))
+                    req_id = cur.lastrowid
                     conn.execute(
-                        'DELETE FROM outstanding_reqs WHERE run_id = ? AND seq_id = ?',
-                        (run.run_id, seq_id))
-                    completed_for_db = set(row['uid'] for row in parsed_result.rows) - constraint_failed
-                    conn.executemany(
-                        'INSERT OR IGNORE INTO completed_reqs (uid, model, run_id) VALUES (?, ?, ?)',
-                        [(uid, model_alias, run.run_id) for uid in completed_for_db])
+                        "INSERT INTO raw_data (req_id, run_id, request, response) VALUES (?, ?, ?, ?)",
+                        (req_id, self.run.run_id, json.dumps(response.payload), json.dumps(response.data)))
+                    ret, msg = self.store_result(conn, req_id, response, processed)
+                    break
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e):
+                    raise
+                logging.info(f"SQLite locked for {self.model_alias} #{self.seq_id}: {e}. Retrying...")
+                time.sleep(5)
 
-                break  # Success, exit the retry loop
-        except sqlite3.OperationalError as e:
-            if "locked" not in str(e):
-                raise
-            logging.info(f"SQLite locked for {model_alias} #{seq_id}: {e}. Retrying in 5 second...")
-            time.sleep(5)
-            continue
-
-    # Constraint violations always count as per-UID failures
-    failed |= constraint_failed
-    redo |= constraint_failed
-
-    completed = set(row['uid'] for row in parsed_result.rows) - constraint_failed
-
-    if result.error_msg and len(result.error_msg) > 50:
-        result.error_msg = result.error_msg[0:49] + "…"
-
-    prefix = f"FAILED: {result.error_msg}" if result.error_msg else "FINISHED"
-    ok_cnt = len(completed)
-    failed_cnt = len(failed)
-    missing_cnt = len(redo - failed)
-    logging.info(f"{prefix}: {run.run_id}/{model_alias} #{seq_id}; id: {req_id}; ok/err/…: {ok_cnt}/{failed_cnt}/{missing_cnt}")
-    return RequestResult(failed=failed, redo=redo, completed=completed, error_class=result.error_class)
+        if msg:
+            logging.info(msg)
+        return ret

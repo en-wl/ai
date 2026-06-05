@@ -8,7 +8,7 @@ import signal
 import random
 
 from req._config import *
-from req._request import *
+from req._uids_request import *
 from req._manager import STATE_NAMES,  run as manager_run
 
 last_log_time = None
@@ -32,16 +32,16 @@ def shutdown_mode_on_error():
         enter_shutdown_mode("failure mode")
 
 bad_uids = set()
-class BatchSession:
+class BatchSession(Run):
     def __init__(self, model_alias, batch_size, run_id):
         if DYNAMIC_MODE and ENABLE_REDO:
             raise RuntimeError("ENABLE_REDO is not supported in DYNAMIC mode")
 
+        super().__init__(model_alias, batch_size, run_id)
+
         self.input_strings = {}
         self.input_data = {}
         self.dynamic = DYNAMIC_MODE
-        self.model_alias = model_alias
-        self.run_id = run_id
 
         self.header = '|'.join(input_cols)
         with open_db('r') as conn:
@@ -51,26 +51,12 @@ class BatchSession:
                 self.input_strings[uid] = '|'.join(values)
                 self.input_data[uid] = dict(zip(input_cols, row))
 
-        self.batch_size = batch_size
-
         if self.dynamic:
             self._est_remaining = batch_size
         else:
             self._uids_todo = []
             self.push(*self.input_strings.keys())
             self.shuffle()
-
-        model_config = models_config[model_alias]
-        temperature = model_config.get('temperature', 1) if temp_override is None else temp_override
-        reasoning = model_config.get('reasoning', 'n/a')
-        provider = model_config.get('provider')
-
-        with open_db('w', 'batch init') as conn:
-            conn.execute(
-                """INSERT INTO runs (run_id, model, provider, start_time, batch_size, temperature, reasoning_effort, sample_type)
-                   VALUES (?, ?, ?, (julianday('now') - 2440587.5) * 86400.0, ?, ?, ?, 'random')""",
-                (run_id, model_alias, provider, self.batch_size, temperature, reasoning)
-            )
 
     @property
     def remaining(self):
@@ -354,7 +340,7 @@ def main(max_workers, batch_size, run_id):
             if uids:
                 logging.info(f"starting {run.run_id}/{model_alias} {run.progress_str(seq_id)}; UIDs: {len(uids)}; req in flight: {len(in_flight) + 1}")
                 with shutdown_mode_on_error():
-                    f = executor.submit(send_request, run, model_alias, seq_id, list(uids))
+                    f = executor.submit(UidsRequest(run, model_alias, seq_id, list(uids)).send)
                     seq_id += 1
                     in_flight.add(f)
                     last_log_time = time.time()
