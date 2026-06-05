@@ -33,3 +33,14 @@ create table if not exists raw_data (
   response text
 );
 
+create table if not exists results (
+  row_id integer primary key,
+  req_id integer not null,
+  run_id integer not null,
+  label text,
+  word text not null,
+  variant_label text,
+  variant text,
+  qualifier text,
+  notes text
+);
