@@ -1,16 +1,41 @@
+#!/usr/bin/env python3
+import os
 import sys
+import atexit
 import logging
+import tempfile
 
-from req._config import *
-from req._uids_request import *
+# Make the `req` package (repo root) and this dir (for `variant`) importable
+_here = os.path.dirname(os.path.abspath(__file__))
+_root = os.path.dirname(_here)
+for _p in (_root, _here):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from req._config import models_config, open_db
 from req._loop import run_loop, install_signal_handlers
 from req._manager import run as manager_run
+from variant import VariantRequest, RedoBatchSession
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
+WORDLIST_ENV = 'FV_WORDLIST'
+
+USAGE = "usage: ./req <model> [model2 ...] [max_workers] [batch_size] < wordlist"
+
+
+def read_words(fh):
+    words = []
+    for line in fh:
+        w = line.strip()
+        if w:
+            words.append(w)
+    return words
+
 
 if __name__ == '__main__':
     args = sys.argv[1:]
@@ -25,12 +50,11 @@ if __name__ == '__main__':
         run_id = int(args[0])
         args = args[1:]
     if not args:
-        print(f"usage: python3 -m req <model> [model2 ...] [max_workers] [batch_size]")
+        print(USAGE)
         print(f"\navailable models: {', '.join(models_config.keys())}")
         sys.exit(2)
 
     # Parse: model ... [<num>] [<num>]
-    # A model is anything not starting with a digit or '-'
     i = 0
     models = []
     while i < len(args) and not (args[i][:1].isdigit() or args[i][:1] == '-'):
@@ -59,7 +83,7 @@ if __name__ == '__main__':
 
     if i < len(args):
         print(f"error: unexpected extra arguments: {' '.join(args[i:])}")
-        print(f"usage: python3 -m req <model> [model2 ...] [max_workers] [batch_size]")
+        print(USAGE)
         sys.exit(2)
 
     bad = [m for m in models if m not in models_config]
@@ -73,18 +97,40 @@ if __name__ == '__main__':
         print(f"available models: {', '.join(models_config.keys())}")
         sys.exit(2)
 
-    with open_db('w') as conn:
-        conn.executemany("insert or ignore into models values (?)",
-                         ((k,) for k in models_config.keys()))
-
     if not managed:
-        manager_run(models, extra_args=rest)
+        # Read the word list once from stdin and stash it where each managed
+        # child can read the full list (children inherit our environment).
+        words = read_words(sys.stdin)
+        if not words:
+            print("error: no words on stdin")
+            sys.exit(2)
+
+        fd, path = tempfile.mkstemp(prefix='fv-words-', suffix='.txt',
+                                    dir=os.environ.get('TMPDIR') or None)
+        with os.fdopen(fd, 'w') as f:
+            f.write('\n'.join(words))
+        os.environ[WORDLIST_ENV] = path
+        atexit.register(lambda: os.path.exists(path) and os.remove(path))
+
+        with open_db('w') as conn:
+            conn.executemany("insert or ignore into models values (?)",
+                             ((k,) for k in models_config.keys()))
+
+        manager_run(models, extra_args=rest,
+                    child_cmd=[sys.executable, os.path.abspath(__file__)])
     else:
+        path = os.environ.get(WORDLIST_ENV)
+        if not path or not os.path.exists(path):
+            print(f"error: {WORDLIST_ENV} not set or missing")
+            sys.exit(2)
+        with open(path) as f:
+            words = read_words(f)
+
         install_signal_handlers()
 
         model_alias = models[0]
         batch_size = batch_size_override or models_config[model_alias]['batch_size']
 
-        run = UidsBatchSession(model_alias, batch_size, run_id)
-        rc = run_loop(run, UidsRequest, max_workers)
+        run = RedoBatchSession(model_alias, batch_size, run_id, words)
+        rc = run_loop(run, VariantRequest, max_workers)
         sys.exit(rc)

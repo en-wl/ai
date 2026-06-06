@@ -1,10 +1,7 @@
-from req._request import *
+from math import ceil, floor
 
-class RequestResult(NamedTuple):
-    failed: set = frozenset()
-    redo: set = frozenset()
-    completed: set = frozenset()
-    error_class: str = None  # '429', 'connection', 'model', or None
+from req._request import *
+from req._loop import BatchSession, RequestResult, shutdown_mode_on_error
 
 @dataclass(slots=True)
 class ProcessedResponse:
@@ -268,3 +265,165 @@ class UidsRequest(Request):
 
         return RequestResult(failed=failed, redo=redo, completed=completed,
                              error_class=response.error_class), msg
+
+
+class UidsBatchSession(BatchSession):
+    """UID-aware scheduler: loads input rows keyed by uid, supports dynamic
+    mode, per-uid failure tracking, and a skip-after-3-failures policy."""
+    def __init__(self, model_alias, batch_size, run_id):
+        if DYNAMIC_MODE and ENABLE_REDO:
+            raise RuntimeError("ENABLE_REDO is not supported in DYNAMIC mode")
+
+        self.input_strings = {}
+        self.input_data = {}
+        self.dynamic = DYNAMIC_MODE
+        self.bad_uids = set()
+        self.failed_uids = {}
+        self.header = '|'.join(input_cols)
+
+        with open_db('r') as conn:
+            for row in input_rows(conn, model_alias):
+                uid = row[0]
+                values = [str(col) for col in row]
+                self.input_strings[uid] = '|'.join(values)
+                self.input_data[uid] = dict(zip(input_cols, row))
+
+        if self.dynamic:
+            super().__init__(model_alias, batch_size, run_id, [])
+            self._est_remaining = batch_size
+        else:
+            super().__init__(model_alias, batch_size, run_id,
+                             self.input_strings.keys())
+
+    @property
+    def remaining(self):
+        if self.dynamic:
+            return self._est_remaining
+        return len(self._todo)
+
+    def push(self, *uids):
+        super().push(*(uid for uid in uids if uid not in self.bad_uids))
+
+    def next(self, seq_id, threshold, in_flight):
+        if self.dynamic:
+            return self._next_dynamic(seq_id, threshold, in_flight)
+        return super().next(seq_id, threshold, in_flight)
+
+    def _next_dynamic(self, seq_id, threshold, in_flight):
+        assert(threshold > 0)
+        with shutdown_mode_on_error(), open_db('w', 'candidates') as conn:
+            create_candidates_temp_table(conn, self.model_alias, self.run_id)
+            conn.execute('''
+                CREATE TEMP TABLE _candidates_w_outstanding AS
+                SELECT c.uid,
+                       c.reqs_cnt + coalesce(o.cnt, 0) AS reqs_cnt,
+                       c.num - coalesce(o.cnt, 0) AS num
+                  FROM _candidates c
+                  LEFT JOIN (SELECT uid, count(*) AS cnt
+                               FROM outstanding_reqs WHERE model = ?
+                               GROUP BY uid) o USING (uid)
+                  WHERE c.num - coalesce(o.cnt, 0) > 0
+                    AND c.uid NOT IN (SELECT uid FROM skipped_uids WHERE run_id = ?)
+                ''', (self.model_alias, self.run_id))
+            num_uids, min_reqs, self._est_remaining = conn.execute(
+                'SELECT count(*), COALESCE(MAX(num),0), COALESCE(sum(NUM),0) FROM _candidates_w_outstanding').fetchone()
+            work_to_do = num_uids >= threshold # or min_reqs > 1
+            now = time.time()
+            def state():
+                return conn.execute("SELECT state from outstanding_runs where run_id = ?", (self.run_id,)).fetchone()[0]
+            def update_state(state):
+                conn.execute("UPDATE outstanding_runs SET state = ?, timestamp = ? WHERE run_id = ?", (state, now, self.run_id,))
+            def get_uids():
+                update_state('active')
+                uids = [r[0] for r in conn.execute('SELECT uid FROM _candidates_w_outstanding ORDER BY reqs_cnt, num DESC, random() LIMIT ?',
+                                                   (self._local_batch_size(),))]
+                conn.executemany('INSERT INTO outstanding_reqs VALUES (?,?,?,?,?)',
+                                 ((uid, self.model_alias, self.run_id, seq_id, now) for uid in uids))
+                self._est_remaining -= len(uids)
+                return uids
+            if in_flight and not work_to_do:
+                return None
+            if not CROSS_MODEL_DEPS:
+                return get_uids()
+            if num_uids != 0:
+                # not done
+                conn.execute("UPDATE outstanding_runs SET state = 'waiting', timestamp = ? where state = 'done'", (now,))
+            if work_to_do:
+                return get_uids()
+            def wakeup():
+                if num_uids == 0:
+                    any_active = conn.execute("SELECT MAX(state = 'active') from outstanding_runs").fetchone()[0]
+                    if any_active:
+                        update_state('waiting')
+                    else:
+                        update_state('done')
+                    return None
+                return get_uids()
+            if state() == 'wakeup':
+                return wakeup()
+            all_done = conn.execute("SELECT MIN(state = 'done') from outstanding_runs").fetchone()[0]
+            if all_done:
+                # trully done
+                return []
+            update_state('waiting')
+            all_waiting = conn.execute("SELECT MIN(state = 'waiting') from outstanding_runs").fetchone()[0]
+            if all_waiting:
+                conn.execute("UPDATE outstanding_runs SET state = 'wakeup', timestamp = ?", (now,))
+                return wakeup()
+            return None
+        return []
+
+    def threshold(self):
+        return (self.batch_size if ENABLE_REDO else
+                ceil(self.batch_size / 2) if self.dynamic else
+                1)
+
+    def record_result(self, result):
+        completed = result.completed
+        failed = result.failed
+        redo = result.redo
+        error_class = result.error_class
+        failed_uids = self.failed_uids
+
+        # Reset failure count for UIDs that succeeded
+        for uid in completed:
+            failed_uids.pop(uid, None)
+
+        # Track per-UID failures
+        for uid in failed:
+            failed_uids[uid] = failed_uids.get(uid, 0) + 1
+        new_bad_uids = {uid for uid, cnt in failed_uids.items() if cnt >= 3}
+
+        other_adj = 0
+        if new_bad_uids:
+            self.bad_uids.update(new_bad_uids)
+            for uid in new_bad_uids:
+                del failed_uids[uid]
+            sorted_uids = sorted(new_bad_uids)
+            if len(sorted_uids) > 8:
+                uids_str = ','.join(str(u) for u in sorted_uids[:7]) + ',…'
+            else:
+                uids_str = ','.join(str(u) for u in sorted_uids)
+            logging.info(f"{self.model_alias}: SKIPPING {len(new_bad_uids)} UIDs (3+ consecutive failures): {uids_str}")
+            # adj other_errors as the errors may of been due to specific UIDS.
+            # allow it to be negative for now to prevent order dependency
+            other_adj -= 3
+
+            if self.dynamic:
+                with shutdown_mode_on_error(), open_db('w', 'skipped uids') as conn:
+                    conn.executemany(
+                        'INSERT OR IGNORE INTO skipped_uids VALUES (?,?)',
+                        [(uid, self.run_id) for uid in new_bad_uids])
+
+        if not self.dynamic and (error_class == '429' or ENABLE_REDO):
+            self.push(*redo)
+
+        return other_adj
+
+    def on_request_complete(self):
+        # `on_request_complete` (no self) is the config-level callback
+        if self.dynamic and on_request_complete is not None:
+            on_request_complete()
+
+    def summary(self):
+        return f"; skipped {len(self.bad_uids)} UIDs"

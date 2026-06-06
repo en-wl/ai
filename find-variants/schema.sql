@@ -44,3 +44,20 @@ create table if not exists results (
   qualifier text,
   notes text
 );
+
+-- Required by req/_manager.py (run_id assignment + stale cleanup). Not
+-- otherwise used here: find-variants runs a single pass, no dynamic mode.
+create table if not exists outstanding_runs (
+  run_id integer primary key,
+  timestamp real not null,
+  state text not null check (state in ('active', 'waiting', 'wakeup', 'done'))
+);
+
+create table if not exists outstanding_reqs (
+  uid integer not null,
+  model text not null,
+  run_id integer not null,
+  seq_id integer not null,
+  timestamp real not null,
+  primary key (run_id, seq_id, uid)
+) without rowid;

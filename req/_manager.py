@@ -9,7 +9,7 @@ import time
 import sqlite3
 from random import random
 
-STATE_NAMES = {0: "FINISHED", 1: "SHUTDOWN", 2: "FAILED", 3: "ABORTED", 4: "KILLED"}
+from req._loop import STATE_NAMES
 
 class _SerializedHandler(logging.Handler):
     """Logging handler that acquires a shared lock before emitting."""
@@ -27,8 +27,11 @@ class _SerializedHandler(logging.Handler):
             self.handleError(record)
 
 
-def run(models, extra_args=()):
+def run(models, extra_args=(), child_cmd=None):
     from req._config import pre_run, post_run, open_db, CROSS_MODEL_DEPS, STALE_RUNS_TIMEOUT
+
+    if child_cmd is None:
+        child_cmd = [sys.executable, '-m', 'req']
 
     write_lock = threading.Lock()
 
@@ -157,7 +160,7 @@ def run(models, extra_args=()):
             set_exit_code(3)
             break
 
-        cmd = [sys.executable, '-m', 'req', '--managed', str(run_id), model] + list(extra_args)
+        cmd = list(child_cmd) + ['--managed', str(run_id), model] + list(extra_args)
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
