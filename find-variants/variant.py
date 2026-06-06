@@ -97,9 +97,12 @@ class VariantRequest(Request):
         return RequestResult(completed=words), msg
 
 
-class RedoBatchSession(BatchSession):
-    """Single-pass word session that re-queues any request that fails, so the
-    run only finishes once every word has been processed."""
+class VariantBatchSession(BatchSession):
     def record_result(self, result):
+        """re-queues any request that fails, so the run only finishes once every word
+        has been processed. """
         self.push(*result.redo)
         return 0
+    def next(self, seq_id, threshold, in_flight):
+        items = super().next(seq_id, threshold, in_flight)
+        return sorted(items)

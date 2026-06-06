@@ -61,3 +61,19 @@ create table if not exists outstanding_reqs (
   timestamp real not null,
   primary key (run_id, seq_id, uid)
 ) without rowid;
+
+drop view if exists results_w_model;
+create view results_w_model as
+select model,r.* from results as r join runs using (run_id);
+
+drop view if exists request_cost;
+create view request_cost as
+select rd.req_id, entry_time, send_time,
+       entry_time - send_time as elapsed_secs,
+       rd.run_id,
+       batch_size as input_uids,
+       error is null as success,
+       json_extract(response, '$.usage.cost') as usage_cost
+from raw_data as rd
+join requests using (req_id);
+select * from request_cost limit 0;

@@ -15,7 +15,7 @@ for _p in (_root, _here):
 from req._config import models_config, open_db
 from req._loop import run_loop, install_signal_handlers
 from req._manager import run as manager_run
-from variant import VariantRequest, RedoBatchSession
+from variant import VariantRequest, VariantBatchSession
 
 logging.basicConfig(
     level=logging.INFO,
@@ -131,6 +131,6 @@ if __name__ == '__main__':
         model_alias = models[0]
         batch_size = batch_size_override or models_config[model_alias]['batch_size']
 
-        run = RedoBatchSession(model_alias, batch_size, run_id, words)
+        run = VariantBatchSession(model_alias, batch_size, run_id, words)
         rc = run_loop(run, VariantRequest, max_workers)
         sys.exit(rc)

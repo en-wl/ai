@@ -9,6 +9,24 @@ For each word I want you to determine if there is an American or British
 spelling difference or if common spelling variants exists.  Spelling variants
 do not include variants in compound form (open vs closed vs hyphenated).
 
+## What to report
+
+Only report on words that have spelling variants within the scope of this
+report.  If there is no spelling difference in scope exclude simply skip the
+word.
+
+Spelling variants that are within scope and should be included:
+
+  * Differences between American, British, or Oxford spelling.
+  * Common spelling differences within a dialect
+
+Spelling variants that are never in scope and should not be included:
+
+  * Differences in compound form (open vs closed vs hyphenated), even if that
+    is the only difference between American and British spellings.
+  * Uncommon spellings of a word
+  * Non-spelling variants
+
 ## Output
 
 Output exactly the following:
@@ -30,9 +48,8 @@ information.  Keep this section short.  I should be between 0-100 words.
 
 ## Markdown table
 
-If a word does not have any spelling variants simply skip it.  If it does
-return relevent variant information for a word using the following table as a
-model:
+When a variant is in scope to report use the following table as a guide for
+how to report it:
 
 |Label|Word|Variant Label|Variant|Qualifier|Notes|
 |---|---|---|---|---|---|
@@ -50,6 +67,10 @@ model:
 
 Labels should be one of: American, British, Oxford, variant, non-variant,
 American variant, British variant, Oxford variant
+
+When there is a difference between British and Oxford spelling always include
+the Oxford label: either grouped with the American label, or on it's own row
+in the rare cases the Oxford spelling is different from the American spelling.
 
 A qualifier note should be used when the spelling depends on usage.
 
@@ -79,4 +100,3 @@ the following strings as the first sentence in the Notes section:
    - Do not attempt to line up columns.  Keep the table compact by minimizing
      the use of unnecessary whitespace.  Do not put spaces between pipe
      characters and cell values. Use `|word|lemma|` not `| word | lemma |`.
-
