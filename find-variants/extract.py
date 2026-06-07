@@ -23,6 +23,13 @@ LABEL_CODES = {
 CODE_ORDER = list(LABEL_CODES.values())
 CODE_RANK = {c: i for i, c in enumerate(CODE_ORDER)}
 
+# with --easy, only output groups whose codes are all in this set
+EASY_CODES = {'A', 'B', 'Z'}
+
+# with --regional, a group must carry an American-side and a British-side code
+AMERICAN_CODES = {'A', 'Av'}
+BRITISH_CODES = {'B', 'Bv'}
+
 
 class Row(NamedTuple):
     row_id: int
@@ -77,9 +84,19 @@ class UnionFind:
 
 
 def main():
-    run_ids = [int(a) for a in sys.argv[1:]]
+    args = sys.argv[1:]
+    easy_only = False
+    for flag in ('--easy', '-e'):
+        if flag in args:
+            easy_only = True
+            args.remove(flag)
+    regional_only = '--regional' in args
+    while '--regional' in args:
+        args.remove('--regional')
+    run_ids = [int(a) for a in args]
     if not run_ids:
-        print('usage: extract.py run_id [run_id ...]', file=sys.stderr)
+        print('usage: extract.py [--easy] [--regional] run_id [run_id ...]',
+              file=sys.stderr)
         sys.exit(1)
 
     con = sqlite3.connect(DB)
@@ -140,6 +157,21 @@ def main():
                            key=lambda c: CODE_RANK.get(c, len(CODE_ORDER)))
             entries.append(Entry(codes, w))
         entries.sort(key=lambda e: (code_key(e.labels), e.word))
+
+        group_codes = {c for e in entries for c in e.labels}
+
+        # output-only filter: keep only groups whose codes are all easy, and
+        # drop the whole group if any spelling is both American and British
+        if easy_only:
+            if not group_codes <= EASY_CODES:
+                continue
+            if any({'A', 'B'} <= set(e.labels) for e in entries):
+                continue
+
+        # output-only filter: keep only groups with a US- and a UK-side spelling
+        if regional_only:
+            if not (group_codes & AMERICAN_CODES and group_codes & BRITISH_CODES):
+                continue
 
         # collect distinct qualifiers / notes from every row in the group
         rids = sorted({rid for w in words for rid, _c in word_labels[w]})
