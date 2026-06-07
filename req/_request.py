@@ -119,6 +119,12 @@ def send_prompt(model_alias, prompt):
         else:
             payload["reasoning_effort"] = reasoning
 
+    if 'verbosity' in model:
+        payload['verbosity'] = model['verbosity']
+
+    if 'service_tier' in model:
+        payload['service_tier'] = model['service_tier']
+
     max_output = model.get('max_output', None)
     if max_output is not None:
         payload['max_output'] = max_output
