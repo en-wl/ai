@@ -1,20 +1,23 @@
--- Calibration examples (uids 1-16).  Loaded into the `calibration` staging
--- table by init.sh, NOT directly into `input`: init.sh rebuilds `input` from
--- input.tsv (authoritative) plus the calibration pairs that input.tsv lacks.
-insert into calibration (uid, noun, plural) values
-  (1,'wool','wools'),
-  (2,'military','militaries'),
-  (3,'weakness','weaknesses'),
-  (4,'abnegation','abnegations'),
-  (5,'strangeness','strangenesses'),
-  (6,'yellowness','yellownesses'),
-  (7,'pants','pantses'),
-  (8,'building','buildings'),
-  (9,'running','runnings'),
-  (10,'refusing','refusings'),
-  (11,'tuba','tubas'),
-  (12,'tuba','tubae'),
-  (13,'formula','formulae'),
-  (14,'color','colours'),
-  (15,'colorize','colorizes'),
-  (16,'zgxptk','zgxptks');
+-- Calibration examples (embedded instruction-following check).  Loaded into the
+-- `calibration` staging table by populate.sh, NOT directly into `input`:
+-- populate.sh assigns uids (in the 1-19 block) and silently skips any pair an
+-- earlier source (input.tsv) already claimed, so a pair is never sent to the
+-- model twice.  Keyed by (noun,plural) -- no uids here; gold.sql / test-parse.py
+-- recover the live uid via (noun,plural).
+insert into calibration (noun, plural) values
+  ('wool','wools'),
+  ('military','militaries'),
+  ('weakness','weaknesses'),
+  ('abnegation','abnegations'),
+  ('strangeness','strangenesses'),
+  ('yellowness','yellownesses'),
+  ('pants','pantses'),
+  ('building','buildings'),
+  ('running','runnings'),
+  ('refusing','refusings'),
+  ('tuba','tubas'),
+  ('tuba','tubae'),
+  ('formula','formulae'),
+  ('color','colours'),
+  ('colorize','colorizes'),
+  ('zgxptk','zgxptks');
