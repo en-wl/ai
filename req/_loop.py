@@ -94,7 +94,11 @@ class BatchSession(Run):
         # returns [] only when done; None if there might be more later
         if self.remaining == 0:
             return []
-        if self.remaining < threshold:
+        # Hold back a sub-threshold batch only while requests are still in
+        # flight (more redos may arrive to fill it).  If nothing is in flight
+        # there is nothing more to wait for, so flush what remains -- otherwise
+        # the loop would spin forever on the final partial batch.
+        if in_flight and self.remaining < threshold:
             return None
         size = self._local_batch_size()
         items = self._todo[-size:]
