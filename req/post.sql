@@ -14,11 +14,15 @@ create view request_cost as
 select rd.req_id, entry_time, send_time,
        entry_time - send_time as elapsed_secs,
        rd.run_id,
-       batch_size as input_uids,
+       rq.batch_size as input_uids,
        error is null as success,
-       json_extract(response, '$.usage.cost') as usage_cost
+       case ru.provider
+         when 'deepinfra' then json_extract(response, '$.usage.estimated_cost')
+         else                  json_extract(response, '$.usage.cost')
+       end as usage_cost
 from raw_data as rd
-join requests using (req_id);
+join requests as rq using (req_id)
+join runs as ru using (run_id);
 select * from request_cost limit 0;
 
 drop view if exists uid_cost;
