@@ -1,0 +1,44 @@
+-- DYNAMIC-mode candidate query for the plurals task.
+--
+-- Builds the temp table _candidates(uid, reqs_cnt, num) the scheduler expects,
+-- where `num` is how many MORE requests a uid still needs from this model.
+-- Consensus is within-model and on the BASE category only (the ", rare form"
+-- suffix is stripped before comparing), per the task policy.
+--
+-- Bound params (set in req-config.py create_candidates_temp_table):
+--   :model     - model alias to score
+--   :min_runs  - request each uid at least this many times
+--   :max_runs  - if still not unanimous, escalate up to this many
+--
+-- reqs_cnt counts committed votes only; the framework subtracts in-flight
+-- (outstanding_reqs) on top of this, so num must not account for those.
+create temp table _candidates as
+with
+  v as (
+    select req_id, uid,
+           case when category like '%, rare form'
+                then substr(category, 1, length(category) - length(', rare form'))
+                else category end as cat
+      from results_w_model
+     where model = :model),
+  agg as (
+    select uid,
+           count(distinct req_id) as reqs_cnt,
+           count(distinct cat)    as cat_variety
+      from v
+     group by uid),
+  cnts as (
+    select i.uid,
+           coalesce(a.reqs_cnt, 0)    as reqs_cnt,
+           coalesce(a.cat_variety, 0) as cat_variety
+      from input i
+      left join agg a using (uid)),
+  needed as (
+    select uid, reqs_cnt,
+           case when reqs_cnt < :min_runs
+                     then :min_runs - reqs_cnt
+                when reqs_cnt < :max_runs and cat_variety > 1
+                     then :max_runs - reqs_cnt
+                else 0 end as num
+      from cnts)
+select uid, reqs_cnt, num from needed where num > 0;
