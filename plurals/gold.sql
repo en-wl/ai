@@ -35,7 +35,10 @@ create table if not exists gold (
 insert into gold (noun, plural, category, rare_form) values
   ('wool','wools','natural',0),
   ('military','militaries','natural',0),
+  ('matrix','matrices','natural',0),
   ('weakness','weaknesses','natural',0),
+  ('music','musics','specialized',0),
+  ('knowledge','knowledges','specialized',0),
   ('abnegation','abnegations','contrived',0),
   ('strangeness','strangenesses','contrived',0),
   ('yellowness','yellownesses','contrived',0),

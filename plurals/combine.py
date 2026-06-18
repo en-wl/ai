@@ -40,7 +40,7 @@ MODEL_WEIGHTS = [
     ('gpt-5.4',     2.0 / 3.0),
 ]
 
-CATEGORIES = ['natural', 'contrived', 'ungrammatical', 'gerund', 'invalid']
+CATEGORIES = ['natural', 'specialized', 'contrived', 'ungrammatical', 'gerund', 'invalid']
 
 # Derived objects this script owns; dropped (as table OR view) before rebuild so
 # a table<->view change is handled cleanly.  Includes legacy names no longer

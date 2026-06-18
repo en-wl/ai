@@ -23,7 +23,7 @@ for k, v in models_config.items():
     v['reasoning'] = "none"
 models_config["gpt-oss-120b"]["reasoning"] = "low"
 
-categories = {'natural', 'contrived', 'ungrammatical', 'gerund', 'invalid'}
+categories = {'natural', 'specialized', 'contrived', 'ungrammatical', 'gerund', 'invalid'}
 
 # Final category tally; runs once after the batch finishes (both modes).
 post_run = ['python3', str(_dir / 'combine.py')]

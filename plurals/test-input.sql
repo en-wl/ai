@@ -7,7 +7,10 @@
 insert into calibration (noun, plural) values
   ('wool','wools'),
   ('military','militaries'),
+  ('matrix','matrices'),
   ('weakness','weaknesses'),
+  ('music','musics'),
+  ('knowledge','knowledges'),
   ('abnegation','abnegations'),
   ('strangeness','strangenesses'),
   ('yellowness','yellownesses'),
