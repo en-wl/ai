@@ -14,6 +14,7 @@ create table if not exists runs (
   temperature real not null,
   reasoning_effort text not null, -- 'n/a', 'off', 'none', 'low', etc.
   sample_type text not null -- "random", "continues", "mix", etc
+  note text,
 );
 
 create table if not exists requests (

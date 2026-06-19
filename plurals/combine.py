@@ -36,8 +36,10 @@ RARE_SUFFIX = ', rare form'
 # Per-model weights for the combined (category_wavg) distribution.  Edit here to
 # change the mix or add models.
 MODEL_WEIGHTS = [
-    ('gemma-4-31b', 1.0 / 3.0),
-    ('gpt-5.4',     2.0 / 3.0),
+    ('gemma-4-31b',  1/4),
+    ('gpt-5.4',      1/4),
+    ('gpt-oss-120b', 1/4),
+    ('qwen3.5-397b-a17b', 1/4)
 ]
 
 CATEGORIES = ['natural', 'specialized', 'contrived', 'ungrammatical', 'gerund', 'invalid']

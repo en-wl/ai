@@ -21,7 +21,9 @@ deepinfra_key_file = os.environ.get('REQ_DEEPINFRA_KEY_FILE', deepinfra_key_file
 
 for k, v in models_config.items():
     v['reasoning'] = "none"
+models_config["gpt-5.4"]["reasoning"] = "minimal"
 models_config["gpt-oss-120b"]["reasoning"] = "low"
+#models_config["gemma-4-31b"]["reasoning"] = "low"
 
 categories = {'natural', 'specialized', 'contrived', 'ungrammatical', 'gerund', 'invalid'}
 
@@ -35,6 +37,8 @@ post_run = ['python3', str(_dir / 'combine.py')]
 CONSENSUS_THRESHOLDS = {
     None:          (3, 5),    # default
     'gemma-4-31b': (5, 10),
+    'gpt-oss-120b': (5, 10),
+    'qwen3.5-397b-a17b': (5, 10),
 }
 
 def _thresholds(model):

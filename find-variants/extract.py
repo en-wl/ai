@@ -26,11 +26,6 @@ CODE_RANK = {c: i for i, c in enumerate(CODE_ORDER)}
 # with --easy, only output groups whose codes are all in this set
 EASY_CODES = {'A', 'B', 'Z'}
 
-# with --regional, a group must carry an American-side and a British-side code
-AMERICAN_CODES = {'A', 'Av'}
-BRITISH_CODES = {'B', 'Bv'}
-
-
 class Row(NamedTuple):
     row_id: int
     req_id: int
@@ -170,7 +165,9 @@ def main():
 
         # output-only filter: keep only groups with a US- and a UK-side spelling
         if regional_only:
-            if not (group_codes & AMERICAN_CODES and group_codes & BRITISH_CODES):
+            if not (group_codes & {'A', 'Av'} and group_codes & {'B', 'Bv'}):
+                continue
+            if group_codes & {'_', '_v'}:
                 continue
 
         # collect distinct qualifiers / notes from every row in the group

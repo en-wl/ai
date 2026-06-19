@@ -44,17 +44,39 @@ models_config = {
         "name": "openai/gpt-5.2",
         "providers": ["openai"],
         "reasoning": "low",
+        "service_tier": "flex",
         "batch_size": 350, # 400
     },
     "gpt-5.3-chat": {
         "name": "openai/gpt-5.3-chat",
         "providers": ["openai"],
+        "service_tier": "flex",
         "batch_size": 200,
     },
-    "gpt-5.4-nano": {
-        "name": "openai/gpt-5.4-nano",
+    #"gpt-5.4-nano": {
+    #    "name": "openai/gpt-5.4-nano",
+    #    "providers": ["openai"],
+    #    "batch_size": 200,
+    #},
+    "gpt-5.4-mini": {
+        "name": "openai/gpt-5.4-mini",
         "providers": ["openai"],
+        "service_tier": "flex",
         "batch_size": 200,
+    },
+    "gpt-5.4": {
+        "name": "openai/gpt-5.4",
+        "providers": ["openai"],
+        "reasoning": "low",
+        "service_tier": "flex",
+        "batch_size": 350, # 400
+    },
+    "gpt-5.5": {
+        "name": "openai/gpt-5.5",
+        "providers": ["openai"],
+        "reasoning": "low",
+        "service_tier": "flex",
+        "batch_size": 350, # 400
     },
     "gpt-oss-120b": {
         "name": "openai/gpt-oss-120b",
@@ -73,9 +95,9 @@ models_config = {
     },
     "gemma-4-31b": {
         "name": "google/gemma-4-31B-it",
-        "provider": "deepinfra",
-        #"providers": ["parasail/bf16", "akashml/bf16", "venice/bf16"],
-        "reasoning": "low",
+        #"provider": "deepinfra",
+        "providers": ["parasail/bf16", "akashml/bf16", "venice/bf16"],
+        "reasoning": "minimal",
         "batch_size": 100,
     },
     "grok-4.1-fast": {
@@ -115,13 +137,15 @@ models_config = {
     },
     "qwen3.5-397b-a17b": {
         "name": "qwen/qwen3.5-397b-a17b",
-        "providers": ["parasail/fp8", "novita/fp8"], # "atlas-cloud/fp8"],
+        "provider": "deepinfra",
+        #"providers": ["parasail/fp8", "novita/fp8"], # "atlas-cloud/fp8"],
         "reasoning": "none",
         "batch_size": 100,
         "max_output": 9000,
         "temperature": 0.7,
         "top_p": 0.8,
         "presence_penalty" : 1.5,
+        "repetition_penalty" : 1.0,
         "top_k": 20,
     },
     # "qwen3-235b-a22b-thinking": {
