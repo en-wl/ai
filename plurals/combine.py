@@ -42,7 +42,7 @@ MODEL_WEIGHTS = [
     ('qwen3.5-397b-a17b', 1/4)
 ]
 
-CATEGORIES = ['natural', 'specialized', 'contrived', 'ungrammatical', 'gerund', 'invalid']
+CATEGORIES = ['natural', 'specialized', 'contrived', 'gerund', 'ungrammatical', 'invalid']
 
 # Derived objects this script owns; dropped (as table OR view) before rebuild so
 # a table<->view change is handled cleanly.  Includes legacy names no longer
@@ -51,6 +51,7 @@ DERIVED = [
     'category_cnts_by_model', 'category_wavg',
     'category_top_by_model', 'category_top',
     'category_dist_by_model', 'category_dist',
+    'category_dist_cum', 'category_dist_cum_by_model',
     'category_dist_by_uid_model', 'category_dist_by_uid', 'category_cnts',  # legacy
 ]
 
@@ -67,6 +68,14 @@ def _frac_cols():
     return ',\n       '.join(
         f"round(1.0 * sum(case when category = '{c}' then cnt else 0 end) / sum(cnt), 4) as {c}"
         for c in CATEGORIES)
+
+
+def _cum_cols():
+    # each category column = running sum of itself and all prior columns,
+    # referencing the already-pivoted source view's columns
+    return ',\n       '.join(
+        f"round({' + '.join(CATEGORIES[:i+1])}, 4) as {c}"
+        for i, c in enumerate(CATEGORIES))
 
 
 def main():
@@ -188,6 +197,20 @@ def main():
                {_wavg_pivot_cols()}
           from category_wavg
          group by uid
+    """)
+
+    conn.execute(f"""
+        create view category_dist_cum as
+        select uid,
+               {_cum_cols()}
+          from category_dist
+    """)
+
+    conn.execute(f"""
+        create view category_dist_cum_by_model as
+        select uid, model, total_votes,
+               {_cum_cols()}
+          from category_dist_by_model
     """)
 
     conn.commit()
