@@ -14,10 +14,16 @@ Materialized tables:
       from it.  `score` sums to ~1 per uid.
 
 Views:
-  category_top_by_model(uid, model, category, rare_form, cnt, total)
-      Each model's own top (category, rare_form) per uid (by vote count).
+  category_top_by_model(uid, model, category, cnt, total)
+      Each model's own top category per uid (by vote count, rare_form folded in).
   category_top(uid, category, score)
       Combined top category per uid = argmax of the weighted score.
+  rare_by_model(uid, model, rare_cnt, total, frac)
+      Per-(uid, model) rare-form tally, independent of category: how many of the
+      model's votes carried ", rare form" and what fraction of its total.
+  rare_wavg(uid, score)
+      Combined rare-form score = weighted average of the per-model fractions
+      (MODEL_WEIGHTS), mirroring category_wavg.
   category_dist_model(uid, model, total_votes, <category columns>)
       Per-(uid, model) category distribution.
   category_dist(uid, <category columns>)
@@ -54,6 +60,7 @@ CATEGORIES = ['natural', 'specialized', 'contrived', 'gerund', 'ungrammatical', 
 DERIVED = [
     'category_cnts_by_model', 'category_wavg',
     'category_top_by_model', 'category_top',
+    'rare_by_model', 'rare_wavg',
     'category_dist_by_model', 'category_dist',
     'category_dist_cum', 'category_dist_cum_by_model',
     'category_dist_by_uid_model', 'category_dist_by_uid', 'category_cnts',  # legacy
@@ -178,15 +185,18 @@ def main():
     """)
 
     # --- views ---
+    # Top category per (uid, model), with rare_form folded into the vote count
+    # so the ranking is over categories, not (category, rare_form) combos.
     conn.execute("""
         create view category_top_by_model as
-        select uid, model, category, rare_form, cnt, total
+        select uid, model, category, cnt, total
           from (
-            select uid, model, category, rare_form, cnt, total,
+            select uid, model, category, sum(cnt) as cnt, total,
                    row_number() over (
-                     partition by uid, model order by cnt desc, category, rare_form
+                     partition by uid, model order by sum(cnt) desc, category
                    ) as rn
               from category_cnts_by_model
+             group by uid, model, category, total
           )
          where rn = 1
     """)
@@ -202,6 +212,44 @@ def main():
               from category_wavg
           )
          where rn = 1
+    """)
+
+    # rare-form tally, independent of category: per (uid, model), how many of the
+    # model's votes carried ", rare form" and the fraction of its total.
+    conn.execute("""
+        create view rare_by_model as
+        select uid, model,
+               sum(case when rare_form = 1 then cnt else 0 end) as rare_cnt,
+               total,
+               round(1.0 * sum(case when rare_form = 1 then cnt else 0 end) / total, 4) as frac
+          from category_cnts_by_model
+         group by uid, model, total
+    """)
+
+    # combined rare-form score = weighted average of the per-model fractions,
+    # normalized by the weight of the weighted models actually present for the
+    # uid (same wsum logic as category_wavg, so it stays a proper average).
+    # Materialized (like category_wavg) because the join to _weights, a temp
+    # table, only resolves during this build.
+    conn.execute("""
+        create table rare_wavg (
+          uid integer primary key,
+          score real not null
+        )
+    """)
+    conn.execute("""
+        insert into rare_wavg (uid, score)
+        with uid_wsum as (
+          select uid, sum(weight) as wsum
+            from (select distinct uid, model from category_cnts_by_model)
+            join _weights using (model)
+           group by uid)
+        select r.uid,
+               round(sum(w.weight * r.frac) / max(u.wsum), 6) as score
+          from rare_by_model r
+          join _weights w using (model)
+          join uid_wsum u using (uid)
+         group by r.uid
     """)
 
     conn.execute(f"""

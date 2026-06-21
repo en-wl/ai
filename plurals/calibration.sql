@@ -3,9 +3,10 @@
 --
 -- Must be less then 20 entries to fit in the uid range 1-19.
 --
--- `category` is the base category and `rare_form` the boolean.  combine.py's
--- combined category_top folds rare_form into the base category (weighted across
--- models), so the combined check compares category only:
+-- `category` is the base category and `rare_form` the boolean.  combine.py
+-- tracks category and rare_form independently: category_top/category_top_by_model
+-- carry the top category only, while rare_wavg/rare_by_model carry the rare-form
+-- score/fraction.  The combined category check compares category only:
 --
 --   select i.uid, g.noun, g.plural,
 --          g.category as expected, t.category as got, t.score
@@ -14,14 +15,19 @@
 --     join category_top t using (uid)
 --    where g.category <> t.category;
 --
--- Per-model check (category_top_by_model still carries rare_form):
+-- Per-model category check:
 --   select i.uid, g.noun, g.plural, t.model,
---          g.category as exp_cat, g.rare_form as exp_rare,
---          t.category as got_cat, t.rare_form as got_rare
+--          g.category as expected, t.category as got
 --     from calibration g
 --     join input i using (noun, plural)
 --     join category_top_by_model t using (uid)
---    where g.category <> t.category or g.rare_form <> t.rare_form;
+--    where g.category <> t.category;
+--
+-- Rare-form check (combined score; per-model via rare_by_model.frac):
+--   select i.uid, g.noun, g.plural, g.rare_form as expected, r.score as got
+--     from calibration g
+--     join input i using (noun, plural)
+--     join rare_wavg r using (uid);
 
 create table if not exists calibration (
   noun text not null,
