@@ -21,7 +21,7 @@ deepinfra_key_file = os.environ.get('REQ_DEEPINFRA_KEY_FILE', deepinfra_key_file
 
 for k, v in models_config.items():
     v['reasoning'] = "none"
-models_config["gpt-5.4"]["reasoning"] = "minimal"
+#models_config["gpt-5.4"]["reasoning"] = "minimal"
 models_config["gpt-oss-120b"]["reasoning"] = "low"
 #models_config["gemma-4-31b"]["reasoning"] = "low"
 

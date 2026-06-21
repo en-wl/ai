@@ -15,11 +15,13 @@ In addition if the plural given is a rare or archaic form add the string
 `, rare form`:
 
 Be conservative. Mark a plural as `natural` only if an ordinary educated
-speaker might reasonably use it.  Do not mark a plural `natural` merely
-because it is morphologically possible or because it could be used creatively.
-If the plural is conventional but only in academic or technical discourse
-use `specialized`.  If the plural is morphologically possible, and neither
-`natural` or `specialized` apply use `contrived`.
+speaker that is familiar with the singular form, might reasonably use it.  Do
+not mark a plural `natural` merely because it is morphologically possible or
+because it could be used creatively.  If the plural only sounds natural when
+used in technical or academic discourse, use `specialized`.  Do not use
+`specialized` if the word itself is specialized, but the plural is natural for
+that word.  If the plural is morphologically possible, and neither `natural`
+or `specialized` apply use `contrived`.
 
 Reserve `gerund` for pure verb gerunds.  If the word has an independent noun
 usage use one of `natural`, `specialized` or `contrived` instead.
@@ -30,10 +32,12 @@ Calibrate your judgments using these examples:
 
   - wool, wools: natural
   - military, militaries: natural
-  - matrix, matrices: natural
+  - hyperplane, hyperplanes: natural
   - weakness, weaknesses: natural
+  - toothpaste, toothpastes: specialized
   - music, musics: specialized
   - knowledge, knowledges: specialized
+  - deceleration, decelerations: specialized
   - abnegation, abnegations: contrived
   - strangeness, strangenesses: contrived
   - yellowness, yellownesses: contrived

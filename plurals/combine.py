@@ -22,6 +22,10 @@ Views:
       Per-(uid, model) category distribution.
   category_dist(uid, <category columns>)
       Combined per-uid distribution = pivot of category_wavg.
+  category_dist_cum(uid, <category, category_cnt columns>)
+      Combined per-uid cumulative distribution, with a <category>_cnt column
+      after each category giving the count of weighted models unanimous through
+      that category (their cumulative fraction has reached 1.0).
 
 Run directly (`./combine.py`) or wire as pre_run/post_run in req-config.py.
 Connects to data.db in the current directory; does not import req._config.
@@ -76,6 +80,23 @@ def _cum_cols():
     return ',\n       '.join(
         f"round({' + '.join(CATEGORIES[:i+1])}, 4) as {c}"
         for i, c in enumerate(CATEGORIES))
+
+
+def _unam_cnt_cols():
+    # per category: how many models are unanimous through this category, i.e.
+    # their cumulative fraction has reached 1.0
+    return ',\n       '.join(
+        f"sum(case when {c} >= 1.0 then 1 else 0 end) as {c}_cnt"
+        for c in CATEGORIES)
+
+
+def _cum_with_cnt_cols():
+    # cumulative score column immediately followed by its unanimous-model count
+    parts = []
+    for i, c in enumerate(CATEGORIES):
+        parts.append(f"round({' + '.join(CATEGORIES[:i+1])}, 4) as {c}")
+        parts.append(f"{c}_cnt")
+    return ',\n       '.join(parts)
 
 
 def main():
@@ -200,17 +221,25 @@ def main():
     """)
 
     conn.execute(f"""
-        create view category_dist_cum as
-        select uid,
-               {_cum_cols()}
-          from category_dist
-    """)
-
-    conn.execute(f"""
         create view category_dist_cum_by_model as
         select uid, model, total_votes,
                {_cum_cols()}
           from category_dist_by_model
+    """)
+
+    # references category_dist_cum_by_model above, so must be created after it
+    weighted_in = ', '.join(f"'{m}'" for m, _ in MODEL_WEIGHTS)
+    conn.execute(f"""
+        create view category_dist_cum as
+        select category_dist.uid,
+               {_cum_with_cnt_cols()}
+          from category_dist
+          join (
+            select uid, {_unam_cnt_cols()}
+              from category_dist_cum_by_model
+             where model in ({weighted_in})
+             group by uid
+          ) using (uid)
     """)
 
     conn.commit()

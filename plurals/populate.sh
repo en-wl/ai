@@ -12,7 +12,7 @@
 #                       Keyed by uid: a row whose uid already maps to a
 #                       *different* (noun,plural) is a conflict -> skipped with a
 #                       warning.  Same-uid/same-pair re-imports are no-ops.
-#   2. test-input.sql : calibration examples (uid-less; keyed by noun,plural).
+#   2. calibration.sql : calibration examples (uid-less; keyed by noun,plural).
 #   3. sample-input.tsv: ESDB reference data (uid-less; keyed by noun,plural).
 #                        Also retained verbatim in the `sample` table (with its
 #                        ESDB `category`) for later model-vs-ESDB alignment.
@@ -49,8 +49,7 @@ fi
 
 # --- 2. calibration (uid-less; auto-assign in 1-19, silently dedup) ---
 $SQLITE data.db <<'EOF'
-create temp table calibration (noun text not null, plural text not null);
-.read test-input.sql
+.read calibration.sql
 insert into input (uid, noun, plural)
 select (select coalesce(max(uid), 0) from input where uid between 1 and 19)
        + row_number() over (order by noun, plural),
@@ -59,7 +58,7 @@ select (select coalesce(max(uid), 0) from input where uid between 1 and 19)
  where not exists (select 1 from input i where i.noun = c.noun and i.plural = c.plural);
 EOF
 
-# --- 3. sample (load into `sample` table, then auto-assign in 20-99) ---
+# --- 3. sample (load into `sample` table, then auto-assign in 20-99, silently dedup) ---
 $SQLITE data.db <<'EOF'
 create temp table _samp (noun text, plural text, category text);
 .mode tabs

@@ -3,5 +3,5 @@
 # Run all models in DYNAMIC mode (within-model consensus).  Listing a model
 # more than once just adds parallelism for it; the children coordinate through
 # outstanding_reqs (keyed by model), so they never exceed a uid's num cap.
-REQ_MODE=DYNAMIC exec ./req gemma-4-31b gpt-5.4 gpt-oss-120b qwen3.5-397b-a17b 8 50
+REQ_MODE=DYNAMIC exec ./req gemma-4-31b gpt-5.4 gpt-oss-120b qwen3.5-397b-a17b 20 50
 
